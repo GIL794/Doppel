@@ -19,7 +19,7 @@ const FileLink = ({ id, label }) =>
 
 export default function Admin() {
   const { logout } = useAuth();
-  const { payments_simulated: demo } = useDemo();
+  const { payments } = useDemo();
   const [overview, setOverview] = useState(null);
   const [orders, setOrders] = useState([]);
 
@@ -33,7 +33,13 @@ export default function Admin() {
       <div className="max-w-6xl mx-auto px-6 py-12 md:py-16">
         <div className="flex flex-wrap justify-between items-end gap-4 mb-10">
           <h1 className="dsp h1-xl">Orders desk</h1>
-          {demo && <span className="lab bg-ground border-2 border-ink px-3 py-2" data-testid="demo-admin-note">LOCAL DEMO - revenue and orders shown are simulated, no real payments</span>}
+          {payments !== "real" && (
+            <span className="lab bg-ground border-2 border-ink px-3 py-2" data-testid="demo-admin-note">
+              {payments === "demo"
+                ? "LOCAL DEMO - revenue and orders shown are simulated, no real payments"
+                : "LOCAL DEMO - payment provider unverified; treat revenue as not real"}
+            </span>
+          )}
           <button type="button" onClick={logout} className="lab underline" data-testid="admin-logout-button">Sign out</button>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-12">

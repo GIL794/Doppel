@@ -19,8 +19,7 @@ const EMPTY = { name: "", email: "", company: "", language: "English", avatar_st
 export const OrderDialog = () => {
   const { open, setOpen, prefill } = useOrder();
   const { user } = useAuth();
-  const demoFlags = useDemo();
-  const demo = demoFlags.unknown || demoFlags.payments_simulated;
+  const { payments } = useDemo();
   const [form, setForm] = useState(EMPTY);
   const [loading, setLoading] = useState(false);
 
@@ -96,15 +95,17 @@ export const OrderDialog = () => {
               placeholder="Your offer, who it's for, and where people should go. A rough idea is fine."
               className="rounded-none border-2 border-ink bg-white mt-1 text-base focus-visible:ring-signal" data-testid="order-brief-input" />
           </div>
-          <button type="submit" disabled={loading}
+          <button type="submit" disabled={loading || payments === "unknown"}
             className="w-full bg-signal text-ink dsp text-2xl px-6 py-4 border-2 border-ink shadow-hard-md hover:shadow-hard-hover hover:translate-x-1 hover:translate-y-1 transition-[transform,box-shadow] disabled:opacity-70"
             data-testid="order-submit-button">
             {loading ? "Opening secure checkout…" : "Continue to payment · £350 →"}
           </button>
-          {demo ? (
+          {payments === "real" ? (
+            <p className="lab text-center text-graphite">Secure checkout by Stripe · Card & Apple Pay</p>
+          ) : payments === "demo" ? (
             <p className="lab text-center text-graphite" data-testid="demo-checkout-note">Demo checkout - no real payment is taken (Stripe is not connected in this build)</p>
           ) : (
-            <p className="lab text-center text-graphite">Secure checkout by Stripe · Card & Apple Pay</p>
+            <p className="lab text-center text-graphite" data-testid="unknown-checkout-note">Payment provider could not be verified - checkout is disabled</p>
           )}
         </form>
       </DialogContent>

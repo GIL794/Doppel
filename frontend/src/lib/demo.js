@@ -1,25 +1,30 @@
 // Added in the local rebuild (not part of the recovered original code).
-// Asks the backend once which capabilities are real versus simulated, so the
-// UI labels exactly what is not connected. Three states are kept distinct:
-// real (backend says connected), demo (backend says simulated/missing), and
-// unknown (request failed or fields absent) - unknown is NEVER treated as
-// real, so the UI can never claim a live checkout it cannot prove.
+// Asks the backend once which capabilities are real versus simulated.
+// Every capability is tri-state: "real" (explicitly connected), "demo"
+// (explicitly simulated/absent) or "unknown" (fetch failed or the value is
+// not recognised). Unknown is NEVER treated as real, and also never as proof
+// of absence - only explicit demo values justify "not connected" claims.
 import { useEffect, useState } from "react";
 
 const ROOT = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/$/, "");
 
-const UNKNOWN = { unknown: true, payments_simulated: true, video_missing: true, email_missing: true, google_missing: true };
+// Explicit allowlists: anything not listed here stays "unknown".
+const KNOWN = {
+  payments: { mock: "demo", stripe: "real" },
+  ai_video: { none: "demo", configured: "real" },
+  email: { not_configured: "demo", configured: "real" },
+  google_auth: { unavailable: "demo", available: "real" },
+};
+
+const ALL_UNKNOWN = { unknown: true, payments: "unknown", ai_video: "unknown", email: "unknown", google_auth: "unknown" };
 
 export function mapCapabilities(d) {
   const c = (d && d.capabilities) || {};
-  // Absent fields are treated as not connected, never as real.
-  return {
-    unknown: false,
-    payments_simulated: c.payments ? c.payments === "mock" : true,
-    video_missing: c.ai_video ? c.ai_video === "none" : true,
-    email_missing: c.email ? c.email === "not_configured" : true,
-    google_missing: c.google_auth ? c.google_auth === "unavailable" : true,
-  };
+  const map = {};
+  for (const key of Object.keys(KNOWN)) {
+    map[key] = KNOWN[key][c[key]] || "unknown";
+  }
+  return { unknown: false, ...map };
 }
 
 let cached = null;
@@ -31,19 +36,22 @@ export function fetchDemo() {
         return r.json();
       })
       .then(mapCapabilities)
-      .catch(() => UNKNOWN);
+      .catch(() => ALL_UNKNOWN);
   }
   return cached;
 }
 
 export function useDemo() {
-  // Until the fetch lands, everything is unknown - and unknown renders as demo.
-  const [flags, setFlags] = useState(UNKNOWN);
+  // Until the fetch lands, everything is unknown - and unknown renders
+  // conservatively (demo wording / disabled checkout), never as real.
+  const [flags, setFlags] = useState(ALL_UNKNOWN);
   useEffect(() => {
     let live = true;
     fetchDemo().then((f) => live && setFlags(f));
     return () => { live = false; };
   }, []);
-  flags.demo = flags.unknown || flags.payments_simulated || flags.video_missing || flags.email_missing || flags.google_missing;
+  flags.demo =
+    flags.unknown ||
+    [flags.payments, flags.ai_video, flags.email, flags.google_auth].some((s) => s !== "real");
   return flags;
 }

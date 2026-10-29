@@ -56,3 +56,34 @@ def test_status_endpoint_reports_order_provider(monkeypatch):
     status = client.get(f"/api/payments/status/{sid}").json()
     assert status["provider"] == "mock"
     assert status["payment_status"] == "paid"
+
+
+def test_provider_persisted_per_order_survives_config_change(monkeypatch):
+    """An order created under mock must still say mock after the server is
+    restarted with a live provider configured - config never relabels history."""
+    server = load(monkeypatch)
+    client = TestClient(server.app)
+    r = client.post("/api/payments/checkout", json={
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000"})
+    sid = r.json()["session_id"]
+    assert client.get(f"/api/payments/status/{sid}").json()["provider"] == "mock"
+
+    server2 = load(monkeypatch, PAYMENT_PROVIDER="stripe", STRIPE_API_KEY="sk_test_x")
+    client2 = TestClient(server2.app)
+    status = client2.get(f"/api/payments/status/{sid}").json()
+    assert status["provider"] == "mock"  # unchanged
+
+
+def test_order_without_provider_reports_null_not_current_config(monkeypatch):
+    """Orders predating the provider column (or otherwise unknown) report
+    provider null; the frontend must treat that as unverified."""
+    server = load(monkeypatch)
+    import uuid
+    from server import q, now
+    sid = uuid.uuid4().hex
+    q("""INSERT INTO orders (session_id, name, email, company, amount_gbp, provider,
+         payment_status, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+      (sid, "Old", "old@b.co", "OldCo", 350, None, "paid", "open", now()), write=True)
+    status = TestClient(server.app).get(f"/api/payments/status/{sid}").json()
+    assert status["provider"] is None
+    assert status["payment_status"] == "paid"

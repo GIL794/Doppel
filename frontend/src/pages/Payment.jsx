@@ -5,6 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useOrder } from "@/context/OrderContext";
 import { api } from "@/lib/api";
 import { useDemo } from "@/lib/demo";
+import { paymentCopy } from "@/lib/paymentCopy";
 
 const Card = ({ children, testId }) => (
   <section className="max-w-2xl mx-auto px-6 py-24">
@@ -15,7 +16,8 @@ const Card = ({ children, testId }) => (
 export function PaymentSuccess() {
   const [params] = useSearchParams();
   const { user } = useAuth();
-  const { email_missing } = useDemo();
+  const { email } = useDemo();
+  const emailMissing = email === "demo"; // only explicit "not configured" justifies the claim
   const [state, setState] = useState({ status: "checking" });
 
   useEffect(() => {
@@ -44,22 +46,19 @@ export function PaymentSuccess() {
         {state.status === "checking" && <p className="dsp text-3xl animate-pulse" data-testid="payment-checking">Confirming your payment…</p>}
         {state.status === "paid" && (
           <>
-            {/* provider comes from THIS order's payment status, not config alone;
-                anything unproven is presented as simulated, never as a real charge */}
-            {state.provider === "mock" || state.provider == null ? (
-              <>
-                <p className="lab text-signal mb-3">Demo order recorded ✓</p>
-                <h1 className="dsp h2-xl" data-testid="payment-success-title">Your demo order is in.</h1>
-                <p className="mt-4">Order <strong className="tab" data-testid="payment-order-ref">#{state.ref}</strong> was recorded in this local build. No payment was taken.{email_missing ? " No emails will be sent." : ""}</p>
-              </>
-            ) : (
-              <>
-                <p className="lab text-signal mb-3">Payment received ✓</p>
-                <h1 className="dsp h2-xl" data-testid="payment-success-title">You're in. Your double is on the way.</h1>
-                <p className="mt-4">Order <strong className="tab" data-testid="payment-order-ref">#{state.ref}</strong>. We'll email you a script to approve, then your video lands in days.</p>
-                {email_missing && <p className="lab mt-4 text-graphite" data-testid="demo-payment-note">Note: email is not connected in this build, so no confirmation email will arrive.</p>}
-              </>
-            )}
+            {(() => {
+              // Copy comes from THIS order's stored provider via paymentCopy:
+              // only explicit mock says "no payment taken", only a verified live
+              // provider says "payment received", anything else is unverified.
+              const copy = paymentCopy({ provider: state.provider, emailMissing });
+              return (
+                <>
+                  <p className="lab text-signal mb-3" data-testid="payment-eyebrow">{copy.eyebrow}</p>
+                  <h1 className="dsp h2-xl" data-testid="payment-success-title">{copy.title}</h1>
+                  <p className="mt-4" data-testid="payment-body">{copy.body(state.ref)}</p>
+                </>
+              );
+            })()}
             <div className="mt-8 flex flex-wrap gap-4">
               <Link to={user ? "/dashboard" : "/login?next=/dashboard"} className="dsp text-xl bg-signal border-2 border-ink px-6 py-3 shadow-hard-md" data-testid="payment-go-dashboard">
                 {user ? "Go to my studio" : "Create account to track it"}

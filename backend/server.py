@@ -76,7 +76,8 @@ db.executescript(
         session_id TEXT UNIQUE, user_id TEXT, name TEXT, email TEXT, company TEXT,
         language TEXT, avatar_style TEXT, brief TEXT,
         photo_file_id TEXT, logo_file_id TEXT,
-        amount_gbp INTEGER, payment_status TEXT NOT NULL DEFAULT 'initiated',
+        amount_gbp INTEGER, provider TEXT,
+        payment_status TEXT NOT NULL DEFAULT 'initiated',
         status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS teasers (
         teaser_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, photo_file_id TEXT,
@@ -91,6 +92,11 @@ db.executescript(
     """
 )
 db.commit()
+try:
+    db.execute("ALTER TABLE orders ADD COLUMN provider TEXT")
+    db.commit()
+except Exception:
+    pass  # column already exists (fresh schema above includes it)
 
 
 def now():
@@ -368,11 +374,12 @@ def checkout(body: CheckoutIn, request: Request):
     # original Stripe round-trip. Swap PAYMENT_PROVIDER=stripe + STRIPE_API_KEY
     # for a real integration (not included).
     q("""INSERT INTO orders (session_id, user_id, name, email, company, language, avatar_style,
-         brief, photo_file_id, logo_file_id, amount_gbp, payment_status, status, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         brief, photo_file_id, logo_file_id, amount_gbp, provider, payment_status, status, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
       (session_id, user["id"] if user else None, body.name, body.email.lower(), body.company,
        body.language, body.avatar_style, body.brief, body.photo_file_id, body.logo_file_id,
-       ORDER_PRICE_GBP, "paid" if PAYMENT_PROVIDER == "mock" else "initiated", "open", now()), write=True)
+       ORDER_PRICE_GBP, PAYMENT_PROVIDER, "paid" if PAYMENT_PROVIDER == "mock" else "initiated",
+       "open", now()), write=True)
     return {"checkout_url": f"{origin}/payment/success?session_id={session_id}", "session_id": session_id}
 
 
@@ -381,9 +388,12 @@ def payment_status(session_id: str):
     order = q("SELECT * FROM orders WHERE session_id=?", (session_id,), one=True)
     if not order:
         raise HTTPException(404, "Unknown checkout session")
+    # provider is what this order was actually created with (None = unknown,
+    # e.g. orders predating the column); the frontend must not relabel it from
+    # current config.
     return {"session_id": session_id, "payment_status": order["payment_status"],
             "status": "complete" if order["payment_status"] == "paid" else "open",
-            "order_ref": order["order_ref"], "provider": PAYMENT_PROVIDER}
+            "order_ref": order["order_ref"], "provider": order["provider"]}
 
 
 @app.get("/api/orders/mine")
