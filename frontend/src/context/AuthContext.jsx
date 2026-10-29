@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 
 const AuthContext = createContext(null);
 
@@ -43,7 +43,8 @@ export const AuthProvider = ({ children }) => {
 export const useAuth = () => useContext(AuthContext);
 
 export const startGoogleLogin = (next = "/dashboard") => {
-  // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-  const redirectUrl = window.location.origin + next;
-  window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+  // Standard Google OAuth via the rebuilt backend. Off unless the owner
+  // configures a Google OAuth client; the backend then bounces back to
+  // /login?google=unavailable. The original's Emergent-hosted auth is gone.
+  window.location.href = `${API}/auth/google/login?next=${encodeURIComponent(next)}`;
 };

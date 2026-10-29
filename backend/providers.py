@@ -82,6 +82,46 @@ def stripe_verify_webhook(payload: bytes, sig_header: str, secret: str, toleranc
     return json.loads(payload)
 
 
+# ---------------------------------------------------------------- Google OAuth
+# Standard Google OAuth2 authorization-code flow. Requires an owner-registered
+# OAuth client (GOOGLE_CLIENT_ID/SECRET) - the original's Emergent-hosted auth
+# is not reusable. Endpoint shapes per Google's published OAuth documentation.
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+
+
+def google_authorization_url(client_id, redirect_uri, state):
+    qs = urllib.parse.urlencode({
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "online",
+        "prompt": "select_account",
+    })
+    return f"{GOOGLE_AUTH_URL}?{qs}"
+
+
+def google_exchange_code(client_id, client_secret, code, redirect_uri, post=_http_post):
+    return post(
+        GOOGLE_TOKEN_URL,
+        data={
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        },
+    )
+
+
+def google_fetch_userinfo(access_token, get=_http_get):
+    return json.loads(get(GOOGLE_USERINFO_URL,
+                          headers={"Authorization": f"Bearer {access_token}"}))
+
+
 # ---------------------------------------------------------------- Gemini
 # System prompt recovered from the original build's chat export (spec material).
 SCRIPT_SYSTEM = (
@@ -146,18 +186,17 @@ def fal_generate_talking_avatar(api_key, *, model, image_bytes, image_mime, text
 
 
 # ---------------------------------------------------------------- email
-def send_order_email(cfg, *, to_email, order_ref, amount_gbp, mailer=None):
-    """Order confirmation email via plain SMTP. No-op only when unconfigured;
-    raises on real send failure so callers can log it."""
+def _send(cfg, *, to_email, subject, text, mailer=None):
+    """Plain-SMTP send. Returns False only when unconfigured; raises on real
+    send failure so callers can log it (never reported as delivered)."""
     if not cfg.get("host"):
         return False
     body = (
-        f"Subject: Your DoppelAI order #{order_ref}\r\n"
+        f"Subject: {subject}\r\n"
         f"To: {to_email}\r\n"
         f"From: {cfg['from']}\r\n"
         f"Content-Type: text/plain; charset=utf-8\r\n\r\n"
-        f"Thanks for your order (#{order_ref}, GBP {amount_gbp}).\n"
-        f"We'll be in touch about your script and avatar.\n"
+        f"{text}"
     )
     if mailer is None:
         mailer = smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=30)
@@ -166,3 +205,37 @@ def send_order_email(cfg, *, to_email, order_ref, amount_gbp, mailer=None):
             m.login(cfg["user"], cfg["password"])
         m.sendmail(cfg["from"], [to_email], body.encode())
     return True
+
+
+def send_order_email(cfg, *, to_email, order_ref, amount_gbp, mailer=None):
+    return _send(
+        cfg, to_email=to_email, mailer=mailer,
+        subject=f"Your DoppelAI order #{order_ref}",
+        text=(f"Thanks for your order (#{order_ref}, GBP {amount_gbp}).\n"
+              f"We'll be in touch with a script for you to approve before we render.\n"))
+
+
+def send_password_reset_email(cfg, *, to_email, reset_link, mailer=None):
+    return _send(
+        cfg, to_email=to_email, mailer=mailer,
+        subject="Reset your DoppelAI password",
+        text=(f"A password reset was requested for this account.\n"
+              f"Open this link within the hour to choose a new password:\n{reset_link}\n"
+              f"If you didn't ask for this, you can ignore this email.\n"))
+
+
+def send_script_ready_email(cfg, *, to_email, order_ref, dashboard_url, mailer=None):
+    return _send(
+        cfg, to_email=to_email, mailer=mailer,
+        subject=f"Your script is ready to approve - order #{order_ref}",
+        text=(f"Your script for order #{order_ref} is ready.\n"
+              f"Review and approve it (or request changes) in your studio:\n{dashboard_url}\n"
+              f"We only render once you've approved the script.\n"))
+
+
+def send_delivery_email(cfg, *, to_email, order_ref, note, mailer=None):
+    extra = f"\nNote from the studio: {note}\n" if note else "\n"
+    return _send(
+        cfg, to_email=to_email, mailer=mailer,
+        subject=f"Your video is ready - order #{order_ref}",
+        text=f"Your video for order #{order_ref} has been delivered.{extra}")

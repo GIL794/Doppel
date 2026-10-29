@@ -142,4 +142,4 @@ def test_password_reset_flow():
 
 def test_google_session_honest_501():
     r = client.post("/api/auth/google/session", json={"session_id": "x"})
-    assert r.status_code == 501 and "not available in this local build" in r.json()["detail"]
+    assert r.status_code == 501 and "/api/auth/google/login" in r.json()["detail"]

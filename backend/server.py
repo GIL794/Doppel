@@ -12,8 +12,15 @@ Honest scope notes (see docs/RECOVERY.md):
 - Payments run in MOCK mode by default (no real charge, no Stripe calls).
 - Teaser avatar videos need an external AI video provider; with none
   configured, teasers fail with an explicit explanation instead of pretending.
-- Google sign-in in the original went through Emergent's hosted auth and is
-  not available here; email/password auth is fully working.
+- Google sign-in uses standard Google OAuth (authorization-code flow) and is
+  OFF unless the owner registers a Google OAuth client and sets
+  GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET; the original's Emergent-hosted auth
+  is not reusable. Email/password auth works with no external service.
+- Paid orders follow the workflow the original site promised ("You approve the
+  script before we render"): verified payment -> in production -> script sent
+  for approval -> customer approves or requests changes -> delivered. The
+  render itself is manual/operator work, as in the original; nothing claims
+  automated video delivery.
 """
 import hashlib
 import hmac
@@ -30,7 +37,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
 
 import providers
@@ -58,6 +65,10 @@ EMAIL_PROVIDER = "smtp" if SMTP_HOST else "not_configured"
 FREE_TEASERS = int(os.environ.get("FREE_TEASERS", "2"))
 ORDER_PRICE_GBP = int(os.environ.get("ORDER_PRICE_GBP", "350"))
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+BACKEND_ORIGIN = os.environ.get("BACKEND_ORIGIN", "http://localhost:8000").rstrip("/")
+GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", f"{BACKEND_ORIGIN}/api/auth/google/callback")
 ACCESS_TTL = 15 * 60
 REFRESH_TTL = 30 * 24 * 3600
 RESET_TTL = 3600
@@ -92,7 +103,10 @@ db.executescript(
         photo_file_id TEXT, logo_file_id TEXT,
         amount_gbp INTEGER, provider TEXT,
         payment_status TEXT NOT NULL DEFAULT 'initiated',
-        status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL);
+        status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL,
+        production_status TEXT NOT NULL DEFAULT 'awaiting_payment',
+        script_text TEXT, change_note TEXT, delivered_note TEXT,
+        production_updated_at TEXT);
     CREATE TABLE IF NOT EXISTS teasers (
         teaser_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, photo_file_id TEXT,
         text TEXT, voice_description TEXT, status TEXT NOT NULL DEFAULT 'processing',
@@ -103,14 +117,28 @@ db.executescript(
     CREATE TABLE IF NOT EXISTS script_previews (
         id TEXT PRIMARY KEY, business TEXT, offer TEXT, language TEXT, vibe TEXT,
         created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS oauth_states (
+        state TEXT PRIMARY KEY, next TEXT NOT NULL DEFAULT '/dashboard',
+        expires_at REAL NOT NULL, created_at TEXT NOT NULL);
     """
 )
 db.commit()
-try:
-    db.execute("ALTER TABLE orders ADD COLUMN provider TEXT")
-    db.commit()
-except Exception:
-    pass  # column already exists (fresh schema above includes it)
+def _ensure_column(table, name, ddl):
+    try:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        db.commit()
+    except Exception:
+        pass  # column already exists (fresh schema above includes it)
+
+
+_ensure_column("orders", "provider", "TEXT")
+_ensure_column("orders", "production_status", "TEXT NOT NULL DEFAULT 'awaiting_payment'")
+_ensure_column("orders", "script_text", "TEXT")
+_ensure_column("orders", "change_note", "TEXT")
+_ensure_column("orders", "delivered_note", "TEXT")
+_ensure_column("orders", "production_updated_at", "TEXT")
+db.execute("UPDATE orders SET production_status='in_production' WHERE payment_status='paid' AND production_status='awaiting_payment'")
+db.commit()
 
 
 def now():
@@ -232,6 +260,18 @@ class TeaserIn(BaseModel):
     voice_description: str | None = Field(default=None, max_length=120)
 
 
+class ScriptSubmitIn(BaseModel):
+    script_text: str = Field(min_length=10, max_length=5000)
+
+
+class ChangeRequestIn(BaseModel):
+    note: str = Field(min_length=3, max_length=1000)
+
+
+class DeliverIn(BaseModel):
+    note: str = Field(default="", max_length=1000)
+
+
 class ScriptIn(BaseModel):
     business: str = Field(min_length=3, max_length=300)
     offer: str | None = Field(default="", max_length=300)
@@ -259,9 +299,9 @@ def root():
         "ai_video": "configured" if (TEASER_PROVIDER == "fal" and FAL_KEY) else "none",
         "ai_script": "configured" if (SCRIPT_PROVIDER == "gemini" and GEMINI_API_KEY) else "template",
         "email": "configured" if EMAIL_PROVIDER == "smtp" else "not_configured",
-        "google_auth": "unavailable",          # was Emergent-hosted in the original
+        "google_auth": "configured" if (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET) else "not_configured",
     }
-    demo = any(v in ("mock", "none", "template", "not_configured", "unavailable")
+    demo = any(v in ("mock", "none", "template", "not_configured")
                for v in capabilities.values())
     return {"app": "DoppelAI API", "status": "ok", "demo": demo,
             "capabilities": capabilities,
@@ -327,8 +367,15 @@ def forgot_password(body: ForgotIn):
         q("INSERT INTO password_resets (token, user_id, expires_at, created_at) VALUES (?,?,?,?)",
           (token, user["id"], time.time() + RESET_TTL, now()), write=True)
         origin = (body.origin_url or FRONTEND_ORIGIN).rstrip("/")
-        # No SMTP in this local build: the reset link is logged, not emailed.
-        log.info("PASSWORD RESET LINK for %s: %s/reset-password?token=%s", user["email"], origin, token)
+        link = f"{origin}/reset-password?token={token}"
+        if EMAIL_PROVIDER == "smtp":
+            try:
+                providers.send_password_reset_email(_smtp_cfg(), to_email=user["email"], reset_link=link)
+            except Exception:
+                log.exception("password reset email failed")
+        else:
+            # No SMTP configured: the reset link is logged, not emailed.
+            log.info("PASSWORD RESET LINK for %s: %s", user["email"], link)
     return {"ok": True}
 
 
@@ -342,12 +389,61 @@ def reset_password(body: ResetIn):
     return {"ok": True}
 
 
+@app.get("/api/auth/google/login")
+def google_login(next: str = "/dashboard"):
+    """Standard Google OAuth2 authorization-code flow (off unless the owner
+    registers a Google OAuth client and sets GOOGLE_CLIENT_ID/SECRET)."""
+    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
+        return RedirectResponse(f"{FRONTEND_ORIGIN}/login?google=unavailable", status_code=302)
+    if not next.startswith("/") or next.startswith("//"):
+        next = "/dashboard"
+    state = secrets.token_urlsafe(24)
+    q("INSERT INTO oauth_states (state, next, expires_at, created_at) VALUES (?,?,?,?)",
+      (state, next, time.time() + 600, now()), write=True)
+    return RedirectResponse(
+        providers.google_authorization_url(GOOGLE_CLIENT_ID, GOOGLE_REDIRECT_URI, state),
+        status_code=302)
+
+
+@app.get("/api/auth/google/callback")
+def google_callback(code: str = "", state: str = ""):
+    fail = RedirectResponse(f"{FRONTEND_ORIGIN}/login?google=failed", status_code=302)
+    row = q("SELECT * FROM oauth_states WHERE state=?", (state,), one=True)
+    if not row or row["expires_at"] < time.time() or not code:
+        return fail
+    q("DELETE FROM oauth_states WHERE state=?", (state,), write=True)
+    try:
+        tokens = providers.google_exchange_code(
+            GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, code, GOOGLE_REDIRECT_URI)
+        info = providers.google_fetch_userinfo(tokens["access_token"])
+    except Exception:
+        log.exception("google oauth exchange failed")
+        return fail
+    email = (info.get("email") or "").lower()
+    if not email or info.get("email_verified") not in (True, "true"):
+        log.warning("google oauth: unverified or missing email")
+        return fail
+    user = q("SELECT * FROM users WHERE email=?", (email,), one=True)
+    if not user:
+        uid = uuid.uuid4().hex
+        role = "admin" if email in ADMIN_EMAILS else "customer"
+        q("INSERT INTO users (id, name, email, password_hash, role, created_at) VALUES (?,?,?,?,?,?)",
+          (uid, (info.get("name") or email.split("@")[0])[:120], email,
+           "!google-oauth", role, now()), write=True)
+        user = q("SELECT * FROM users WHERE id=?", (uid,), one=True)
+    user = apply_admin_flag(user)
+    resp = RedirectResponse(f"{FRONTEND_ORIGIN}{row['next']}", status_code=302)
+    set_auth_cookies(resp, user["id"])
+    return resp
+
+
 @app.post("/api/auth/google/session")
 def google_session(body: GoogleSessionIn):
     raise HTTPException(
         501,
-        "Google sign-in was provided by Emergent's hosted auth in the original app and is "
-        "not available in this local build. Use email and password instead.",
+        "This endpoint belonged to Emergent's hosted auth in the original app. "
+        "This build uses standard Google OAuth via /api/auth/google/login "
+        "(off until the owner configures a Google OAuth client), or email and password.",
     )
 
 
@@ -426,21 +522,32 @@ def checkout(body: CheckoutIn, request: Request):
         # Simulated path: marked paid immediately, no charge. NEVER sends a
         # real confirmation email - a simulated payment must not trigger real
         # email even when SMTP is configured.
+        q("UPDATE orders SET production_status='in_production', production_updated_at=? WHERE session_id=?",
+          (now(), session_id), write=True)
         checkout_url = f"{origin}/payment/success?session_id={session_id}"
     return {"checkout_url": checkout_url, "session_id": session_id}
 
 
-def _maybe_send_order_email(to_email, order_ref):
+def _smtp_cfg():
+    return {"host": SMTP_HOST, "port": SMTP_PORT, "user": SMTP_USER,
+            "password": SMTP_PASSWORD, "from": SMTP_FROM}
+
+
+def _maybe_send(fn, **kwargs):
+    """Send a transactional email through the configured adapter. No-op when
+    SMTP is not configured; failures are logged, never hidden as success."""
     if EMAIL_PROVIDER != "smtp":
         return False
     try:
-        return providers.send_order_email(
-            {"host": SMTP_HOST, "port": SMTP_PORT, "user": SMTP_USER,
-             "password": SMTP_PASSWORD, "from": SMTP_FROM},
-            to_email=to_email, order_ref=order_ref, amount_gbp=ORDER_PRICE_GBP)
+        return fn(_smtp_cfg(), **kwargs)
     except Exception:
-        log.exception("order confirmation email failed")
+        log.exception("transactional email failed")
         return False
+
+
+def _maybe_send_order_email(to_email, order_ref):
+    return _maybe_send(providers.send_order_email, to_email=to_email,
+                       order_ref=order_ref, amount_gbp=ORDER_PRICE_GBP)
 
 
 def _mark_order_paid(session_id, amount_total=None, currency=None):
@@ -452,16 +559,19 @@ def _mark_order_paid(session_id, amount_total=None, currency=None):
     if not order or order["provider"] != "stripe":
         log.warning("paid-event for unknown/non-stripe session %s", session_id)
         return False
-    if amount_total is not None and amount_total != ORDER_PRICE_GBP * 100:
-        log.error("amount mismatch for %s: %s != %s", session_id, amount_total, ORDER_PRICE_GBP * 100)
+    # Fail closed: the event must carry the expected amount and currency -
+    # a missing field is treated as a mismatch, never waved through.
+    if amount_total != ORDER_PRICE_GBP * 100:
+        log.error("amount mismatch for %s: %r != %s", session_id, amount_total, ORDER_PRICE_GBP * 100)
         return False
-    if currency is not None and str(currency).lower() != "gbp":
-        log.error("currency mismatch for %s: %s", session_id, currency)
+    if str(currency or "").lower() != "gbp":
+        log.error("currency mismatch for %s: %r", session_id, currency)
         return False
     if order["payment_status"] == "paid":
         return False  # duplicate delivery: no re-update, no second email
-    q("""UPDATE orders SET payment_status='paid', status='complete'
-         WHERE session_id=? AND payment_status!='paid'""", (session_id,), write=True)
+    q("""UPDATE orders SET payment_status='paid', status='complete',
+         production_status='in_production', production_updated_at=?
+         WHERE session_id=? AND payment_status!='paid'""", (now(), session_id), write=True)
     _maybe_send_order_email(order["email"], order["order_ref"])
     return True
 
@@ -524,6 +634,78 @@ def my_orders(user=Depends(current_user)):
     rows = q("SELECT * FROM orders WHERE payment_status='paid' AND (user_id=? OR email=?) ORDER BY order_ref DESC",
              (user["id"], user["email"]))
     return [dict(r) for r in rows]
+
+
+# ------------------------------------------------- paid-order production loop
+# The original site promised: "You approve the script before we render." The
+# render itself was manual operator work (the original app tracked only
+# payment status and hardcoded "In production"). This workflow makes the
+# promised approval loop real; it never claims automated video delivery.
+PRODUCTION_FLOW = ("awaiting_payment", "in_production", "script_ready",
+                   "changes_requested", "script_approved", "delivered")
+
+
+def _order_or_404(order_ref):
+    order = q("SELECT * FROM orders WHERE order_ref=?", (order_ref,), one=True)
+    if not order:
+        raise HTTPException(404, "Unknown order")
+    return order
+
+
+def _own_order(order, user):
+    if order["user_id"] != user["id"] and order["email"].lower() != user["email"].lower():
+        raise HTTPException(403, "That order belongs to a different account")
+
+
+@app.post("/api/admin/orders/{order_ref}/script")
+def admin_submit_script(order_ref: int, body: ScriptSubmitIn, user=Depends(admin_user)):
+    order = _order_or_404(order_ref)
+    if order["payment_status"] != "paid":
+        raise HTTPException(409, "Scripts can only be sent for paid orders")
+    if order["production_status"] not in ("in_production", "changes_requested"):
+        raise HTTPException(409, f"Order is not awaiting a script (status: {order['production_status']})")
+    q("""UPDATE orders SET script_text=?, production_status='script_ready',
+         production_updated_at=? WHERE order_ref=?""",
+      (body.script_text.strip(), now(), order_ref), write=True)
+    email_sent = _maybe_send(providers.send_script_ready_email, to_email=order["email"],
+                             order_ref=order_ref, dashboard_url=f"{FRONTEND_ORIGIN}/dashboard")
+    return {"ok": True, "production_status": "script_ready", "email_sent": bool(email_sent)}
+
+
+@app.post("/api/orders/{order_ref}/script/approve")
+def approve_script(order_ref: int, user=Depends(current_user)):
+    order = _order_or_404(order_ref)
+    _own_order(order, user)
+    if order["production_status"] != "script_ready":
+        raise HTTPException(409, "There is no script awaiting your approval on this order")
+    q("""UPDATE orders SET production_status='script_approved',
+         production_updated_at=? WHERE order_ref=?""", (now(), order_ref), write=True)
+    return {"ok": True, "production_status": "script_approved"}
+
+
+@app.post("/api/orders/{order_ref}/script/changes")
+def request_script_changes(order_ref: int, body: ChangeRequestIn, user=Depends(current_user)):
+    order = _order_or_404(order_ref)
+    _own_order(order, user)
+    if order["production_status"] != "script_ready":
+        raise HTTPException(409, "There is no script awaiting your review on this order")
+    q("""UPDATE orders SET production_status='changes_requested', change_note=?,
+         production_updated_at=? WHERE order_ref=?""",
+      (body.note.strip(), now(), order_ref), write=True)
+    return {"ok": True, "production_status": "changes_requested"}
+
+
+@app.post("/api/admin/orders/{order_ref}/deliver")
+def admin_deliver_order(order_ref: int, body: DeliverIn, user=Depends(admin_user)):
+    order = _order_or_404(order_ref)
+    if order["production_status"] != "script_approved":
+        raise HTTPException(409, "Only orders with an approved script can be marked delivered")
+    q("""UPDATE orders SET production_status='delivered', delivered_note=?,
+         production_updated_at=? WHERE order_ref=?""",
+      (body.note.strip(), now(), order_ref), write=True)
+    email_sent = _maybe_send(providers.send_delivery_email, to_email=order["email"],
+                             order_ref=order_ref, note=body.note.strip())
+    return {"ok": True, "production_status": "delivered", "email_sent": bool(email_sent)}
 
 
 # ---------------------------------------------------------------- teasers

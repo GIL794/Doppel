@@ -39,6 +39,12 @@ export default function Login() {
     if (user) navigate(user.role === "admin" && next === "/dashboard" ? "/admin" : next, { replace: true });
   }, [user, navigate, next]);
 
+  useEffect(() => {
+    const g = params.get("google");
+    if (g === "unavailable") toast.info("Google sign-in isn't configured in this build. Use email and password.");
+    if (g === "failed") toast.error("Google sign-in didn't complete. Please try again or use email and password.");
+  }, [params]);
+
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
   const submit = async (e) => {

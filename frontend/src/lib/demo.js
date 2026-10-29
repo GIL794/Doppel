@@ -14,7 +14,7 @@ const KNOWN = {
   ai_video: { none: "demo", configured: "real" },
   ai_script: { template: "demo", configured: "real" },
   email: { not_configured: "demo", configured: "real" },
-  google_auth: { unavailable: "demo", available: "real" },
+  google_auth: { not_configured: "demo", configured: "real" },
 };
 
 const ALL_UNKNOWN = { unknown: true, payments: "unknown", ai_video: "unknown", ai_script: "unknown", email: "unknown", google_auth: "unknown" };

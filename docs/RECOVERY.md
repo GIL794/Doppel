@@ -48,10 +48,21 @@ Everything else:
 - **Script preview is a template, not AI.** The endpoint streams the same
   HOOK / SCRIPT / CTA format the frontend parses, generated from a fixed
   template. No AI model is called.
-- **Google sign-in is unavailable.** The original went through Emergent's
-  hosted auth (`auth.emergentagent.com`). The endpoint remains and returns a
-  clear 501; email/password auth works fully.
-- **Password reset links are logged, not emailed** (no SMTP configured).
+- **Google sign-in is off until the owner registers a Google OAuth client.**
+  The original went through Emergent's hosted auth (`auth.emergentagent.com`),
+  which is not reusable. This build implements the standard Google OAuth2
+  authorization-code flow (`/api/auth/google/login` + `/callback`), active only
+  when `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` are set; otherwise the
+  button bounces back with a clear notice. Email/password auth works fully.
+- **Password reset emails send only when SMTP is configured** (`SMTP_HOST` and
+  friends); without SMTP the reset link is logged, never emailed.
+- **Paid-video production is manual, as the original intended.** The original
+  promised "You approve the script before we render" and its app tracked only
+  payment status (the dashboard hardcoded "In production"); production was
+  operator work outside the app. This build makes the promised approval loop
+  real: verified payment -> in production -> admin sends script -> customer
+  approves or requests changes -> admin marks delivered. No automated video
+  production is claimed; nothing renders without an approved script.
 
 ## Verified
 

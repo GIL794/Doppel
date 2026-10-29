@@ -3,14 +3,14 @@ import { mapCapabilities } from "./demo";
 describe("mapCapabilities allowlists", () => {
   it("maps the default local build to demo on every capability", () => {
     const f = mapCapabilities({
-      capabilities: { payments: "mock", ai_video: "none", ai_script: "template", email: "not_configured", google_auth: "unavailable" },
+      capabilities: { payments: "mock", ai_video: "none", ai_script: "template", email: "not_configured", google_auth: "not_configured" },
     });
     expect(f).toEqual({ unknown: false, payments: "demo", ai_video: "demo", ai_script: "demo", email: "demo", google_auth: "demo" });
   });
 
   it("mixed state: real payments do not clear the other demo labels", () => {
     const f = mapCapabilities({
-      capabilities: { payments: "stripe", ai_video: "none", email: "not_configured", google_auth: "unavailable" },
+      capabilities: { payments: "stripe", ai_video: "none", email: "not_configured", google_auth: "not_configured" },
     });
     expect(f.payments).toBe("real");
     expect(f.ai_video).toBe("demo");
@@ -20,7 +20,7 @@ describe("mapCapabilities allowlists", () => {
 
   it("fully connected backend clears every label", () => {
     const f = mapCapabilities({
-      capabilities: { payments: "stripe", ai_video: "configured", ai_script: "configured", email: "configured", google_auth: "available" },
+      capabilities: { payments: "stripe", ai_video: "configured", ai_script: "configured", email: "configured", google_auth: "configured" },
     });
     expect([f.payments, f.ai_video, f.ai_script, f.email, f.google_auth]).toEqual(["real", "real", "real", "real", "real"]);
   });
