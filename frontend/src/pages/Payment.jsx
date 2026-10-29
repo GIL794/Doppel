@@ -15,8 +15,7 @@ const Card = ({ children, testId }) => (
 export function PaymentSuccess() {
   const [params] = useSearchParams();
   const { user } = useAuth();
-  const { payments_simulated, email_missing } = useDemo();
-  const demo = payments_simulated || email_missing;
+  const { email_missing } = useDemo();
   const [state, setState] = useState({ status: "checking" });
 
   useEffect(() => {
@@ -26,7 +25,7 @@ export function PaymentSuccess() {
     const poll = async () => {
       try {
         const { data } = await api.get(`/payments/status/${sessionId}`);
-        if (data.payment_status === "paid") return setState({ status: "paid", ref: data.order_ref });
+        if (data.payment_status === "paid") return setState({ status: "paid", ref: data.order_ref, provider: data.provider });
         if (data.status === "expired") return setState({ status: "expired" });
       } catch {
         return setState({ status: "error" });
@@ -45,10 +44,22 @@ export function PaymentSuccess() {
         {state.status === "checking" && <p className="dsp text-3xl animate-pulse" data-testid="payment-checking">Confirming your payment…</p>}
         {state.status === "paid" && (
           <>
-            <p className="lab text-signal mb-3">Payment received ✓</p>
-            <h1 className="dsp h2-xl" data-testid="payment-success-title">You're in. Your double is on the way.</h1>
-            <p className="mt-4">Order <strong className="tab" data-testid="payment-order-ref">#{state.ref}</strong>. We'll email you a script to approve, then your video lands in days.</p>
-            {demo && <p className="lab mt-4 text-graphite" data-testid="demo-payment-note">Demo build: no payment was taken and no emails will be sent.</p>}
+            {/* provider comes from THIS order's payment status, not config alone;
+                anything unproven is presented as simulated, never as a real charge */}
+            {state.provider === "mock" || state.provider == null ? (
+              <>
+                <p className="lab text-signal mb-3">Demo order recorded ✓</p>
+                <h1 className="dsp h2-xl" data-testid="payment-success-title">Your demo order is in.</h1>
+                <p className="mt-4">Order <strong className="tab" data-testid="payment-order-ref">#{state.ref}</strong> was recorded in this local build. No payment was taken.{email_missing ? " No emails will be sent." : ""}</p>
+              </>
+            ) : (
+              <>
+                <p className="lab text-signal mb-3">Payment received ✓</p>
+                <h1 className="dsp h2-xl" data-testid="payment-success-title">You're in. Your double is on the way.</h1>
+                <p className="mt-4">Order <strong className="tab" data-testid="payment-order-ref">#{state.ref}</strong>. We'll email you a script to approve, then your video lands in days.</p>
+                {email_missing && <p className="lab mt-4 text-graphite" data-testid="demo-payment-note">Note: email is not connected in this build, so no confirmation email will arrive.</p>}
+              </>
+            )}
             <div className="mt-8 flex flex-wrap gap-4">
               <Link to={user ? "/dashboard" : "/login?next=/dashboard"} className="dsp text-xl bg-signal border-2 border-ink px-6 py-3 shadow-hard-md" data-testid="payment-go-dashboard">
                 {user ? "Go to my studio" : "Create account to track it"}

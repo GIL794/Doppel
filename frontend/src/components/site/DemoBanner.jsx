@@ -5,7 +5,9 @@ import { useDemo } from "@/lib/demo";
 export const DemoBanner = () => {
   const flags = useDemo();
   if (!flags.demo) return null;
-  const parts = [];
+  const parts = flags.unknown
+    ? ["live capability status unavailable - assume payments, AI video and email are not connected"]
+    : [];
   if (flags.payments_simulated) parts.push("payments simulated");
   if (flags.video_missing) parts.push("AI video not connected");
   if (flags.email_missing) parts.push("email not connected");

@@ -19,7 +19,8 @@ const EMPTY = { name: "", email: "", company: "", language: "English", avatar_st
 export const OrderDialog = () => {
   const { open, setOpen, prefill } = useOrder();
   const { user } = useAuth();
-  const { payments_simulated: demo } = useDemo();
+  const demoFlags = useDemo();
+  const demo = demoFlags.unknown || demoFlags.payments_simulated;
   const [form, setForm] = useState(EMPTY);
   const [loading, setLoading] = useState(false);
 
