@@ -7,6 +7,7 @@ import { useDemo } from "@/lib/demo";
 const LABELS = {
   payments: ["payments simulated", "payments not verified"],
   ai_video: ["AI video not connected", "AI video not verified"],
+  ai_script: ["script previews templated", "script preview not verified"],
   email: ["email not connected", "email not verified"],
   google_auth: ["Google sign-in unavailable", "Google sign-in not verified"],
 };
@@ -18,11 +19,15 @@ export const DemoBanner = () => {
     .filter(([key]) => flags[key] !== "real")
     .map(([key, [demo, unknown]]) => (flags[key] === "unknown" ? unknown : demo));
   return (
-    <div
-      className="fixed bottom-0 inset-x-0 z-[100] bg-ink text-ground border-t-2 border-signal px-4 py-2 text-center lab"
-      data-testid="demo-banner"
-    >
-      Local demo: {parts.join(" · ")}
-    </div>
+    <>
+      {/* in-flow spacer so the fixed banner never covers page content */}
+      <div className="h-16 sm:h-9" aria-hidden="true" data-testid="demo-banner-spacer" />
+      <div
+        className="fixed bottom-0 inset-x-0 z-[100] bg-ink text-ground border-t-2 border-signal px-4 py-2 text-center lab"
+        data-testid="demo-banner"
+      >
+        Local demo: {parts.join(" · ")}
+      </div>
+    </>
   );
 };

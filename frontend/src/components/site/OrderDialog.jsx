@@ -50,7 +50,7 @@ export const OrderDialog = () => {
             <DialogDescription className="text-ground/80">Tell us the basics. You approve the script before we render.</DialogDescription>
           </DialogHeader>
         </div>
-        <form onSubmit={submit} className="px-6 pb-6 pt-2 space-y-4">
+        <form onSubmit={submit} className="px-6 pb-24 pt-2 space-y-4">
           <div className="grid sm:grid-cols-2 gap-4">
             <div>
               <Label htmlFor="o-name" className="lab">Your name</Label>

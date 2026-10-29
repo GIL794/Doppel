@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { useOrder } from "@/context/OrderContext";
@@ -26,6 +27,8 @@ const NAV = [
 export const Header = () => {
   const { user } = useAuth();
   const { openOrder } = useOrder();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const accountTo = user ? (user.role === "admin" ? "/admin" : "/dashboard") : "/login";
   return (
     <header className="sticky top-0 z-50 bg-ground/95 backdrop-blur border-b-2 border-ink" data-testid="site-header">
       <nav className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between gap-4" aria-label="Main">
@@ -37,7 +40,7 @@ export const Header = () => {
         </div>
         <div className="flex items-center gap-3">
           <Link
-            to={user ? (user.role === "admin" ? "/admin" : "/dashboard") : "/login"}
+            to={accountTo}
             className="lab link-grow hidden sm:inline"
             data-testid="nav-account-link"
           >
@@ -51,16 +54,28 @@ export const Header = () => {
           >
             Buy · £350
           </button>
+          <button
+            type="button"
+            className="lg:hidden lab border-2 border-ink px-3 py-2 bg-ground shadow-hard-sm"
+            aria-expanded={menuOpen}
+            aria-label="Open navigation menu"
+            onClick={() => setMenuOpen((v) => !v)}
+            data-testid="mobile-menu-button"
+          >
+            {menuOpen ? "Close" : "Menu"}
+          </button>
         </div>
       </nav>
-      <div className="lg:hidden border-t border-ink/20 overflow-x-auto">
-        <div className="flex gap-6 px-6 py-2 lab whitespace-nowrap">
-          {NAV.map(([href, label]) => (
-            <a key={href} href={href} data-testid={`mnav-${href.slice(1)}`}>{label}</a>
-          ))}
-          <Link to={user ? "/dashboard" : "/login"} data-testid="mnav-account">{user ? "Account" : "Sign in"}</Link>
+      {menuOpen && (
+        <div className="lg:hidden border-t-2 border-ink bg-ground" data-testid="mobile-menu">
+          <div className="max-w-6xl mx-auto px-6 py-4 flex flex-col gap-4 lab">
+            {NAV.map(([href, label]) => (
+              <a key={href} href={href} onClick={() => setMenuOpen(false)} data-testid={`mnav-${href.slice(1)}`}>{label}</a>
+            ))}
+            <Link to={accountTo} onClick={() => setMenuOpen(false)} data-testid="mnav-account">{user ? "Account" : "Sign in"}</Link>
+          </div>
         </div>
-      </div>
+      )}
     </header>
   );
 };

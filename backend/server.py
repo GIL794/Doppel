@@ -33,6 +33,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
 
+import providers
+
 # ---------------------------------------------------------------- config
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = os.environ.get("DB_PATH", str(BASE_DIR / "data" / "app.db"))
@@ -40,7 +42,19 @@ UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", str(BASE_DIR / "uploads")))
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
 PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "mock")  # mock | stripe
 STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
-TEASER_PROVIDER = os.environ.get("TEASER_PROVIDER", "none")     # none = no AI provider wired
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+SCRIPT_PROVIDER = os.environ.get("SCRIPT_PROVIDER", "template")  # template | gemini
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+TEASER_PROVIDER = os.environ.get("TEASER_PROVIDER", "none")     # none | fal
+FAL_KEY = os.environ.get("FAL_KEY", "")
+FAL_MODEL = os.environ.get("FAL_MODEL", "veed/fabric-1.0")      # talking-avatar endpoint used by the original build
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
+EMAIL_PROVIDER = "smtp" if SMTP_HOST else "not_configured"
 FREE_TEASERS = int(os.environ.get("FREE_TEASERS", "2"))
 ORDER_PRICE_GBP = int(os.environ.get("ORDER_PRICE_GBP", "350"))
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
@@ -242,12 +256,13 @@ def root():
     # capability only stops being called "demo" when it is genuinely connected.
     capabilities = {
         "payments": PAYMENT_PROVIDER,          # "mock" = simulated, no real charge
-        "ai_video": TEASER_PROVIDER,           # "none" = not connected
-        "email": "not_configured",             # no SMTP in this build
+        "ai_video": "configured" if (TEASER_PROVIDER == "fal" and FAL_KEY) else "none",
+        "ai_script": "configured" if (SCRIPT_PROVIDER == "gemini" and GEMINI_API_KEY) else "template",
+        "email": "configured" if EMAIL_PROVIDER == "smtp" else "not_configured",
         "google_auth": "unavailable",          # was Emergent-hosted in the original
     }
-    demo = (capabilities["payments"] == "mock" or capabilities["ai_video"] == "none"
-            or capabilities["email"] == "not_configured" or capabilities["google_auth"] == "unavailable")
+    demo = any(v in ("mock", "none", "template", "not_configured", "unavailable")
+               for v in capabilities.values())
     return {"app": "DoppelAI API", "status": "ok", "demo": demo,
             "capabilities": capabilities,
             "note": "rebuilt backend (see docs/RECOVERY.md)"}
@@ -369,6 +384,7 @@ def checkout(body: CheckoutIn, request: Request):
     user = user_from_token(request.cookies.get("access_token"), "access")
     session_id = uuid.uuid4().hex
     origin = (body.origin_url or FRONTEND_ORIGIN).rstrip("/")
+    checkout_url = None
     # MOCK payment provider: no real charge. The order is marked paid immediately
     # and the "checkout" redirects straight to the success page, mirroring the
     # original Stripe round-trip. Swap PAYMENT_PROVIDER=stripe + STRIPE_API_KEY
@@ -378,9 +394,76 @@ def checkout(body: CheckoutIn, request: Request):
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
       (session_id, user["id"] if user else None, body.name, body.email.lower(), body.company,
        body.language, body.avatar_style, body.brief, body.photo_file_id, body.logo_file_id,
-       ORDER_PRICE_GBP, PAYMENT_PROVIDER, "paid" if PAYMENT_PROVIDER == "mock" else "initiated",
+       ORDER_PRICE_GBP, PAYMENT_PROVIDER, "paid" if PAYMENT_PROVIDER == "mock" else "pending",
        "open", now()), write=True)
-    return {"checkout_url": f"{origin}/payment/success?session_id={session_id}", "session_id": session_id}
+    order_ref = str(q("SELECT order_ref FROM orders WHERE session_id=?", (session_id,), one=True)["order_ref"])
+    if PAYMENT_PROVIDER == "stripe":
+        # REAL charge path - only when explicitly configured with a key the
+        # owner supplied. Never exercised in the default local build.
+        try:
+            sess = providers.stripe_create_checkout(
+                STRIPE_API_KEY, order_ref=order_ref, email=body.email.lower(),
+                origin_url=origin, amount_gbp=ORDER_PRICE_GBP)
+        except Exception:
+            # Ambiguous outcome: the request may or may not have reached Stripe.
+            # Never claim "no charge was made" - we cannot verify that here.
+            # A Checkout Session can only collect payment if the customer
+            # completes it, and this customer never received a URL, but the
+            # order is still preserved for reconciliation instead of retried
+            # blindly (each retry creates a NEW session; no auto-retry).
+            q("UPDATE orders SET status='failed', payment_status='unknown' WHERE session_id=?",
+              (session_id,), write=True)
+            log.exception("stripe checkout session creation failed")
+            raise HTTPException(
+                502,
+                "Could not reach the payment provider, so checkout did not start. "
+                "Whether a checkout session was created could not be verified; "
+                "no payment page was shown. Please contact us before retrying.")
+        session_id = sess["session_id"]
+        checkout_url = sess["checkout_url"]
+        q("UPDATE orders SET session_id=? WHERE order_ref=?", (session_id, order_ref), write=True)
+    if PAYMENT_PROVIDER == "mock":
+        # Simulated path: marked paid immediately, no charge. Try the
+        # confirmation email only when email is genuinely configured.
+        _maybe_send_order_email(body.email.lower(), order_ref)
+        checkout_url = f"{origin}/payment/success?session_id={session_id}"
+    return {"checkout_url": checkout_url, "session_id": session_id}
+
+
+def _maybe_send_order_email(to_email, order_ref):
+    if EMAIL_PROVIDER != "smtp":
+        return False
+    try:
+        return providers.send_order_email(
+            {"host": SMTP_HOST, "port": SMTP_PORT, "user": SMTP_USER,
+             "password": SMTP_PASSWORD, "from": SMTP_FROM},
+            to_email=to_email, order_ref=order_ref, amount_gbp=ORDER_PRICE_GBP)
+    except Exception:
+        log.exception("order confirmation email failed")
+        return False
+
+
+@app.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request):
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(503, "Stripe webhook not configured")
+    payload = await request.body()
+    try:
+        event = providers.stripe_verify_webhook(
+            payload, request.headers.get("stripe-signature", ""), STRIPE_WEBHOOK_SECRET)
+    except ValueError:
+        raise HTTPException(400, "Invalid webhook signature")
+    obj, t = event.get("data", {}).get("object", {}), event.get("type")
+    if t in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+        q("""UPDATE orders SET payment_status='paid', status='complete'
+             WHERE session_id=? AND payment_status!='paid'""", (obj.get("id"),), write=True)
+        order = q("SELECT * FROM orders WHERE session_id=?", (obj.get("id"),), one=True)
+        if order:
+            _maybe_send_order_email(order["email"], order["order_ref"])
+    elif t == "checkout.session.expired":
+        q("UPDATE orders SET payment_status='expired', status='expired' WHERE session_id=?",
+          (obj.get("id"),), write=True)
+    return {"status": "ok"}
 
 
 @app.get("/api/payments/status/{session_id}")
@@ -388,6 +471,17 @@ def payment_status(session_id: str):
     order = q("SELECT * FROM orders WHERE session_id=?", (session_id,), one=True)
     if not order:
         raise HTTPException(404, "Unknown checkout session")
+    if order["provider"] == "stripe" and order["payment_status"] == "pending" and STRIPE_API_KEY:
+        # live-check Stripe for a session whose webhook has not arrived yet
+        try:
+            sess = providers.stripe_retrieve_session(STRIPE_API_KEY, session_id)
+            if sess.get("payment_status") == "paid" or sess.get("status") == "complete":
+                q("""UPDATE orders SET payment_status='paid', status='complete'
+                     WHERE session_id=? AND payment_status!='paid'""", (session_id,), write=True)
+                order = q("SELECT * FROM orders WHERE session_id=?", (session_id,), one=True)
+                _maybe_send_order_email(order["email"], order["order_ref"])
+        except Exception:
+            log.exception("stripe session retrieve failed")
     # provider is what this order was actually created with (None = unknown,
     # e.g. orders predating the column); the frontend must not relabel it from
     # current config.
@@ -405,6 +499,27 @@ def my_orders(user=Depends(current_user)):
 
 # ---------------------------------------------------------------- teasers
 def _finish_teaser(teaser_id):
+    if TEASER_PROVIDER == "fal" and FAL_KEY:
+        # Real generation path - only when the owner supplies a fal.ai key.
+        try:
+            t = q("SELECT * FROM teasers WHERE teaser_id=?", (teaser_id,), one=True)
+            f = q("SELECT * FROM files WHERE file_id=?", (t["photo_file_id"],), one=True)
+            data = (UPLOAD_DIR / f["stored_name"]).read_bytes()
+            video = providers.fal_generate_talking_avatar(
+                FAL_KEY, model=FAL_MODEL, image_bytes=data,
+                image_mime=f["mime"], text=t["text"])
+            vid = uuid.uuid4().hex
+            (UPLOAD_DIR / f"{vid}.mp4").write_bytes(video)
+            q("""INSERT INTO files (file_id, stored_name, original_filename, mime, kind, created_at)
+                 VALUES (?,?,?,?,?,?)""",
+              (vid, f"{vid}.mp4", "teaser.mp4", "video/mp4", "video", now()), write=True)
+            q("UPDATE teasers SET status='done', video_file_id=? WHERE teaser_id=?",
+              (vid, teaser_id), write=True)
+            return
+        except Exception as e:
+            q("UPDATE teasers SET status='failed', error=? WHERE teaser_id=?",
+              (f"Video generation failed: {e}", teaser_id), write=True)
+            return
     time.sleep(6)
     # No AI video provider is wired in this build: fail loudly instead of
     # pretending a video was generated.
@@ -451,19 +566,31 @@ def script_preview(body: ScriptIn):
     q("INSERT INTO script_previews (id, business, offer, language, vibe, created_at) VALUES (?,?,?,?,?,?)",
       (uuid.uuid4().hex, body.business, body.offer, body.language, body.vibe, now()), write=True)
     offer = (body.offer or "").strip()
+    if SCRIPT_PROVIDER == "gemini" and GEMINI_API_KEY:
+        # Real AI path - only when the owner supplies a Gemini key.
+        try:
+            text = providers.gemini_generate_script(
+                GEMINI_API_KEY, model=GEMINI_MODEL, business=body.business.strip(),
+                offer=offer, language=body.language, vibe=body.vibe)
+            return _script_sse(text)
+        except Exception:
+            log.exception("gemini script generation failed; falling back to template")
     text = SCRIPT_TEMPLATE.format(
         business=body.business.strip(),
-        offer_line=f"share \"{offer}\" " if offer else "",
+        offer_line=f"share \"{offer}\" " if offer else "stand out ",
         vibe_line=f"in a {body.vibe.lower()} style" if body.vibe else "",
         offer_sentence=f"Right now: {offer}." if offer else "",
     )
     if body.language != "English":
         text += f"\n\n(Preview generated in English; the finished video is delivered in {body.language}.)"
 
+    return _script_sse(text)
+
+
+def _script_sse(text):
     def stream():
-        # Templated stand-in for the original AI-generated script. No AI model
-        # is called; the format (HOOK / SCRIPT / CTA) matches what the
-        # recovered frontend parses.
+        # Streams any script text (templated stand-in or Gemini output) in the
+        # HOOK / SCRIPT / CTA format the recovered frontend parses.
         for i in range(0, len(text), 24):
             yield f"data: {json.dumps({'delta': text[i:i + 24]})}\n\n"
             time.sleep(0.02)

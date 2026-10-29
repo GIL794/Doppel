@@ -10,7 +10,8 @@ from fastapi.testclient import TestClient
 
 
 def load(monkeypatch, **env):
-    for k in ("PAYMENT_PROVIDER", "STRIPE_API_KEY", "TEASER_PROVIDER"):
+    for k in ("PAYMENT_PROVIDER", "STRIPE_API_KEY", "TEASER_PROVIDER", "FAL_KEY",
+              "SCRIPT_PROVIDER", "GEMINI_API_KEY", "SMTP_HOST", "STRIPE_WEBHOOK_SECRET"):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -32,7 +33,7 @@ def test_default_build_reports_everything_not_connected(monkeypatch):
     d = flags(server)
     assert d["demo"] is True
     assert d["capabilities"] == {
-        "payments": "mock", "ai_video": "none",
+        "payments": "mock", "ai_video": "none", "ai_script": "template",
         "email": "not_configured", "google_auth": "unavailable"}
 
 

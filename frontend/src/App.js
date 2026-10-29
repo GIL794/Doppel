@@ -47,7 +47,7 @@ export default function App() {
           <AppRouter />
           <OrderDialog />
           <DemoBanner />
-          <Toaster position="top-center" toastOptions={{ className: "rounded-none border-2 border-ink font-body" }} />
+          <Toaster position="bottom-center" offset="104px" mobileOffset="104px" toastOptions={{ className: "rounded-none border-2 border-ink font-body" }} />
         </OrderProvider>
       </AuthProvider>
     </BrowserRouter>

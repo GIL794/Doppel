@@ -12,11 +12,12 @@ const ROOT = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/$/, "");
 const KNOWN = {
   payments: { mock: "demo", stripe: "real" },
   ai_video: { none: "demo", configured: "real" },
+  ai_script: { template: "demo", configured: "real" },
   email: { not_configured: "demo", configured: "real" },
   google_auth: { unavailable: "demo", available: "real" },
 };
 
-const ALL_UNKNOWN = { unknown: true, payments: "unknown", ai_video: "unknown", email: "unknown", google_auth: "unknown" };
+const ALL_UNKNOWN = { unknown: true, payments: "unknown", ai_video: "unknown", ai_script: "unknown", email: "unknown", google_auth: "unknown" };
 
 export function mapCapabilities(d) {
   const c = (d && d.capabilities) || {};
@@ -52,6 +53,6 @@ export function useDemo() {
   }, []);
   flags.demo =
     flags.unknown ||
-    [flags.payments, flags.ai_video, flags.email, flags.google_auth].some((s) => s !== "real");
+    [flags.payments, flags.ai_video, flags.ai_script, flags.email, flags.google_auth].some((s) => s !== "real");
   return flags;
 }
