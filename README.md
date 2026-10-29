@@ -1,4 +1,4 @@
-# Aipromovids (Doppel)
+# DoppelAI (originally "Doppel" / aipromovids)
 
 AI-generated spokesperson promo videos for small businesses: visitors try a free
 templated script preview, registered users get free avatar "teaser" videos, and a

@@ -2,7 +2,7 @@
   "name": "aipromovids-frontend",
   "version": "1.0.0",
   "private": true,
-  "description": "Recovered frontend for Aipromovids (Doppel). Dependencies reconstructed.",
+  "description": "Recovered frontend for DoppelAI (originally Doppel). Dependencies reconstructed.",
   "scripts": {
     "start": "craco start",
     "build": "craco build",

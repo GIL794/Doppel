@@ -61,13 +61,13 @@ const ROWS = [
 export const WhyTable = () => (
   <section id="why" className="bg-ground py-24 md:py-32" data-testid="why-section">
     <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-[200px_1fr] gap-12">
-      <p className="lab">Why Doppel</p>
+      <p className="lab">Why DoppelAI</p>
       <div className="min-w-0">
         <h2 className="dsp h2-xl mb-12">Skip the shoot, not the quality</h2>
         <div className="border-2 border-ink overflow-x-auto">
           <table className="w-full text-left min-w-[480px]">
             <thead className="bg-ink text-ground">
-              <tr><th className="p-4 lab" /><th className="p-4 lab">Film crew</th><th className="p-4 lab text-signal">Doppel</th></tr>
+              <tr><th className="p-4 lab" /><th className="p-4 lab">Film crew</th><th className="p-4 lab text-signal">DoppelAI</th></tr>
             </thead>
             <tbody className="divide-y-2 divide-ink">
               {ROWS.map(([k, a, b]) => (

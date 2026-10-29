@@ -54,7 +54,7 @@ export default function Login() {
         const body = mode === "signup" ? form : { email: form.email, password: form.password };
         const { data } = await api.post(path, body);
         setUser(data);
-        toast.success(mode === "signup" ? "Welcome to Doppel!" : "Welcome back!");
+        toast.success(mode === "signup" ? "Welcome to DoppelAI!" : "Welcome back!");
       }
     } catch (err) {
       toast.error(formatApiError(err));

@@ -1,5 +1,5 @@
 """
-Aipromovids (Doppel) backend - REBUILT from scratch.
+DoppelAI backend - REBUILT from scratch (original app "Doppel" on Emergent).
 
 This is NOT the original backend. The original lives in the Emergent workspace
 and is not exportable on the free plan. This replacement was written to match
@@ -226,7 +226,7 @@ class ScriptIn(BaseModel):
 
 
 # ---------------------------------------------------------------- app
-app = FastAPI(title="Aipromovids API (rebuilt)")
+app = FastAPI(title="DoppelAI API (rebuilt)")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in FRONTEND_ORIGIN.split(",")],
@@ -248,7 +248,7 @@ def root():
     }
     demo = (capabilities["payments"] == "mock" or capabilities["ai_video"] == "none"
             or capabilities["email"] == "not_configured" or capabilities["google_auth"] == "unavailable")
-    return {"app": "Aipromovids API", "status": "ok", "demo": demo,
+    return {"app": "DoppelAI API", "status": "ok", "demo": demo,
             "capabilities": capabilities,
             "note": "rebuilt backend (see docs/RECOVERY.md)"}
 

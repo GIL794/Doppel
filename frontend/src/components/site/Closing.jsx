@@ -97,7 +97,7 @@ export const FinalCta = () => {
 export const Footer = () => (
   <footer className="bg-ink text-ground py-12" data-testid="site-footer">
     <div className="max-w-6xl mx-auto px-6 flex flex-wrap justify-between gap-4 lab">
-      <span>Doppel · AI avatar promo videos</span>
+      <span>DoppelAI · AI avatar promo videos</span>
       <span className="flex gap-6"><a href="/#how">How</a><a href="/#pricing">Pricing</a><a href="/#faq">FAQ</a></span>
       <span>Online, everywhere</span>
     </div>

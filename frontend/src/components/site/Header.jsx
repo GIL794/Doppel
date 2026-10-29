@@ -10,7 +10,7 @@ export const Logo = ({ testId = "brand-logo" }) => (
       <circle cx="20" cy="14" r="5" fill="none" stroke="#f7f5ef" strokeWidth="2" />
       <path d="M10 23h12" stroke="#f7f5ef" strokeWidth="2" />
     </svg>
-    <span className="dsp text-2xl">Doppel</span>
+    <span className="dsp text-2xl">DoppelAI</span>
   </Link>
 );
 
