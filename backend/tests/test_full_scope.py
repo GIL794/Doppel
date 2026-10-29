@@ -364,3 +364,67 @@ def test_stripe_without_key_reports_misconfigured_not_real(monkeypatch):
     body = server.app and TestClient(server.app).get("/api").json()
     assert body["capabilities"]["payments"] == "misconfigured"
     assert body["demo"] is True
+
+
+def test_google_linking_revokes_squatter_credentials(monkeypatch):
+    """Attacker squats the owner's email with a password account; the owner's
+    verified Google login must kill the attacker's session, password and any
+    outstanding reset token while promoting only the owner's session."""
+    server = load(monkeypatch, ADMIN_EMAILS="boss@example.com",
+                  GOOGLE_CLIENT_ID="cid", GOOGLE_CLIENT_SECRET="csec")
+    monkeypatch.setattr(providers, "google_exchange_code", lambda *a, **k: {"access_token": "t"})
+    monkeypatch.setattr(providers, "google_fetch_userinfo",
+                        lambda *a, **k: {"email": "boss@example.com", "email_verified": True,
+                                         "name": "Boss", "sub": "s1"})
+    squatter = TestClient(server.app)
+    squatter.post("/api/auth/register", json={"name": "X", "email": "boss@example.com", "password": "squatterpass1"})
+    assert squatter.get("/api/auth/me").status_code == 200  # live session
+    squatter.post("/api/auth/forgot-password", json={"email": "boss@example.com"})
+    token = server.q("SELECT token FROM password_resets ORDER BY created_at DESC", one=True)["token"]
+
+    owner = TestClient(server.app)
+    r = owner.get("/api/auth/google/login", follow_redirects=False)
+    from urllib.parse import urlparse, parse_qs
+    st = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+    owner.get(f"/api/auth/google/callback?code=x&state={st}", follow_redirects=False)
+    assert owner.get("/api/auth/me").json()["role"] == "admin"
+    assert owner.get("/api/admin/overview").status_code == 200
+
+    assert squatter.get("/api/auth/me").status_code == 401  # old session dead
+    assert squatter.post("/api/auth/login",
+                         json={"email": "boss@example.com", "password": "squatterpass1"}).status_code == 401
+    assert squatter.post("/api/auth/reset-password",
+                         json={"token": token, "password": "newpass12345"}).status_code == 400
+
+
+def test_password_set_after_linking_survives_future_google_logins(monkeypatch):
+    """The scrub happens only at the linking moment: a password the verified
+    owner sets afterwards (reset email reaches the real inbox) is not wiped by
+    later Google logins."""
+    server = load(monkeypatch, SMTP_HOST="smtp.example.com",
+                  GOOGLE_CLIENT_ID="cid", GOOGLE_CLIENT_SECRET="csec")
+    sent = []
+    monkeypatch.setattr(providers, "google_exchange_code", lambda *a, **k: {"access_token": "t"})
+    monkeypatch.setattr(providers, "google_fetch_userinfo",
+                        lambda *a, **k: {"email": "g@example.com", "email_verified": True,
+                                         "name": "G", "sub": "s1"})
+    monkeypatch.setattr(providers, "send_password_reset_email",
+                        lambda cfg, *, to_email, reset_link, **k: sent.append(reset_link) or True)
+    client = TestClient(server.app)
+
+    def google_login():
+        r = client.get("/api/auth/google/login", follow_redirects=False)
+        from urllib.parse import urlparse, parse_qs
+        st = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+        return client.get(f"/api/auth/google/callback?code=x&state={st}", follow_redirects=False)
+
+    google_login()
+    client.post("/api/auth/forgot-password", json={"email": "g@example.com"})
+    token = sent[0].split("token=")[1]
+    assert client.post("/api/auth/reset-password",
+                       json={"token": token, "password": "ownerchosen123"}).status_code == 200
+    client.post("/api/auth/logout")
+    google_login()  # second Google login: account already verified
+    client.post("/api/auth/logout")
+    assert client.post("/api/auth/login",
+                       json={"email": "g@example.com", "password": "ownerchosen123"}).status_code == 200

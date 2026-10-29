@@ -448,7 +448,16 @@ def google_callback(request: Request, code: str = "", state: str = ""):
            "!google-oauth", "customer", now()), write=True)
         user = q("SELECT * FROM users WHERE id=?", (uid,), one=True)
     elif not user["email_verified"]:
-        q("UPDATE users SET email_verified=1 WHERE id=?", (user["id"],), write=True)
+        # Linking moment: Google just proved ownership of an email whose
+        # password account anyone could have registered (squatting). Revoke
+        # every pre-verification credential - password, live sessions, and
+        # outstanding reset tokens - so only this Google session survives.
+        # If the owner wants a password afterwards, the reset flow now reaches
+        # the verified inbox.
+        q("UPDATE users SET email_verified=1, password_hash='!google-oauth' WHERE id=?",
+          (user["id"],), write=True)
+        q("DELETE FROM sessions WHERE user_id=?", (user["id"],), write=True)
+        q("UPDATE password_resets SET used=1 WHERE user_id=?", (user["id"],), write=True)
         user = q("SELECT * FROM users WHERE id=?", (user["id"],), one=True)
     user = apply_admin_flag(user)
     resp = RedirectResponse(f"{FRONTEND_ORIGIN}{row['next']}", status_code=302)

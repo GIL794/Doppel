@@ -67,6 +67,11 @@ Everything else:
   only on the Google OAuth path (Google-verified email) or out-of-band.
 - Google OAuth state is single-use, 10-minute, and bound to the initiating
   browser with an HttpOnly cookie; only Google-verified emails create/sign in.
+  Linking an existing password account to a verified Google sign-in revokes
+  every pre-verification credential (password, live sessions, outstanding
+  reset tokens), so a squatter who registered the address first keeps nothing;
+  the owner can set a fresh password afterwards via the reset flow, which now
+  reaches the verified inbox.
 - Guest orders attach to an account by email only after that email is verified
   (Google); password-registered accounts see only their own checkouts.
 - Payment fulfillment is idempotent and fails closed: verified `paid` status,
