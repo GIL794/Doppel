@@ -87,7 +87,8 @@ def test_stripe_configured_flow_and_webhook(monkeypatch):
     assert status["payment_status"] == "pending"  # NOT claimed paid before Stripe confirms
 
     payload = json.dumps({"type": "checkout.session.completed",
-                          "data": {"object": {"id": "cs_test_real"}}}).encode()
+                          "data": {"object": {"id": "cs_test_real", "payment_status": "paid",
+                                              "amount_total": 35000, "currency": "gbp"}}}).encode()
     bad = client.post("/api/stripe/webhook", content=payload,
                       headers={"stripe-signature": "t=1,v1=bad"})
     assert bad.status_code == 400
@@ -212,3 +213,87 @@ def test_email_capability_reports_configuration(monkeypatch):
     assert TestClient(server.app).get("/api").json()["capabilities"]["email"] == "not_configured"
     server = load(monkeypatch, SMTP_HOST="smtp.example.com")
     assert TestClient(server.app).get("/api").json()["capabilities"]["email"] == "configured"
+
+
+def _stripe_client(monkeypatch, **env):
+    server = load(monkeypatch, PAYMENT_PROVIDER="stripe", STRIPE_API_KEY="sk_test_x",
+                  STRIPE_WEBHOOK_SECRET="whsec_x", **env)
+    monkeypatch.setattr(providers, "stripe_create_checkout", lambda *a, **k: {
+        "session_id": "cs_test_real", "checkout_url": "https://checkout.stripe.com/c/pay/cs_test_real"})
+    client = TestClient(server.app)
+    client.post("/api/payments/checkout", json={
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000"})
+    return server, client
+
+
+def _fire(client, event_type, obj):
+    payload = json.dumps({"type": event_type, "data": {"object": obj}}).encode()
+    return client.post("/api/stripe/webhook", content=payload,
+                       headers={"stripe-signature": _sig(payload, "whsec_x", int(time.time()))})
+
+
+def test_unpaid_completed_does_not_mark_paid(monkeypatch):
+    server, client = _stripe_client(monkeypatch)
+    # delayed-notification methods complete UNPAID - not proof of payment
+    r = _fire(client, "checkout.session.completed",
+              {"id": "cs_test_real", "payment_status": "unpaid", "amount_total": 35000, "currency": "gbp"})
+    assert r.status_code == 200
+    assert client.get("/api/payments/status/cs_test_real").json()["payment_status"] == "pending"
+
+
+def test_async_payment_succeeded_marks_paid(monkeypatch):
+    server, client = _stripe_client(monkeypatch)
+    _fire(client, "checkout.session.async_payment_succeeded",
+          {"id": "cs_test_real", "amount_total": 35000, "currency": "gbp"})
+    assert client.get("/api/payments/status/cs_test_real").json()["payment_status"] == "paid"
+
+
+def test_duplicate_webhook_sends_exactly_one_email(monkeypatch):
+    server, client = _stripe_client(monkeypatch, SMTP_HOST="smtp.example.com")
+    calls = []
+    monkeypatch.setattr(providers, "send_order_email", lambda *a, **k: calls.append(1) or True)
+    obj = {"id": "cs_test_real", "payment_status": "paid", "amount_total": 35000, "currency": "gbp"}
+    _fire(client, "checkout.session.completed", obj)
+    _fire(client, "checkout.session.completed", obj)  # duplicate delivery
+    assert client.get("/api/payments/status/cs_test_real").json()["payment_status"] == "paid"
+    assert len(calls) == 1
+
+
+def test_late_expiry_does_not_downgrade_paid_order(monkeypatch):
+    server, client = _stripe_client(monkeypatch)
+    _fire(client, "checkout.session.completed",
+          {"id": "cs_test_real", "payment_status": "paid", "amount_total": 35000, "currency": "gbp"})
+    _fire(client, "checkout.session.expired", {"id": "cs_test_real"})
+    assert client.get("/api/payments/status/cs_test_real").json()["payment_status"] == "paid"
+
+
+def test_amount_or_currency_mismatch_rejected(monkeypatch):
+    server, client = _stripe_client(monkeypatch)
+    _fire(client, "checkout.session.completed",
+          {"id": "cs_test_real", "payment_status": "paid", "amount_total": 100, "currency": "gbp"})
+    assert client.get("/api/payments/status/cs_test_real").json()["payment_status"] == "pending"
+    _fire(client, "checkout.session.completed",
+          {"id": "cs_test_real", "payment_status": "paid", "amount_total": 35000, "currency": "usd"})
+    assert client.get("/api/payments/status/cs_test_real").json()["payment_status"] == "pending"
+
+
+def test_status_liecheck_requires_paid_not_complete(monkeypatch):
+    server, client = _stripe_client(monkeypatch)
+    monkeypatch.setattr(providers, "stripe_retrieve_session", lambda *a, **k: {
+        "payment_status": "unpaid", "status": "complete", "amount_total": 35000, "currency": "gbp"})
+    assert client.get("/api/payments/status/cs_test_real").json()["payment_status"] == "pending"
+    monkeypatch.setattr(providers, "stripe_retrieve_session", lambda *a, **k: {
+        "payment_status": "paid", "status": "complete", "amount_total": 35000, "currency": "gbp"})
+    assert client.get("/api/payments/status/cs_test_real").json()["payment_status"] == "paid"
+
+
+def test_mock_checkout_never_sends_real_email_even_with_smtp(monkeypatch):
+    server = load(monkeypatch, SMTP_HOST="smtp.example.com")
+    calls = []
+    monkeypatch.setattr(providers, "send_order_email", lambda *a, **k: calls.append(1) or True)
+    client = TestClient(server.app)
+    r = client.post("/api/payments/checkout", json={
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000"})
+    assert r.status_code == 201
+    assert r.json()["checkout_url"].startswith("http://localhost:3000/payment/success")
+    assert calls == []  # simulated payment -> no real email, ever

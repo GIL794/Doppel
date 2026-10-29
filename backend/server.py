@@ -423,9 +423,9 @@ def checkout(body: CheckoutIn, request: Request):
         checkout_url = sess["checkout_url"]
         q("UPDATE orders SET session_id=? WHERE order_ref=?", (session_id, order_ref), write=True)
     if PAYMENT_PROVIDER == "mock":
-        # Simulated path: marked paid immediately, no charge. Try the
-        # confirmation email only when email is genuinely configured.
-        _maybe_send_order_email(body.email.lower(), order_ref)
+        # Simulated path: marked paid immediately, no charge. NEVER sends a
+        # real confirmation email - a simulated payment must not trigger real
+        # email even when SMTP is configured.
         checkout_url = f"{origin}/payment/success?session_id={session_id}"
     return {"checkout_url": checkout_url, "session_id": session_id}
 
@@ -443,6 +443,29 @@ def _maybe_send_order_email(to_email, order_ref):
         return False
 
 
+def _mark_order_paid(session_id, amount_total=None, currency=None):
+    """Idempotent fulfillment: only a verified paid Stripe session for THIS
+    stripe order, at the expected amount and currency, transitions the order -
+    and only that transition sends the confirmation email. Duplicate webhook
+    deliveries do nothing. Returns True only when the order moved to paid."""
+    order = q("SELECT * FROM orders WHERE session_id=?", (session_id,), one=True)
+    if not order or order["provider"] != "stripe":
+        log.warning("paid-event for unknown/non-stripe session %s", session_id)
+        return False
+    if amount_total is not None and amount_total != ORDER_PRICE_GBP * 100:
+        log.error("amount mismatch for %s: %s != %s", session_id, amount_total, ORDER_PRICE_GBP * 100)
+        return False
+    if currency is not None and str(currency).lower() != "gbp":
+        log.error("currency mismatch for %s: %s", session_id, currency)
+        return False
+    if order["payment_status"] == "paid":
+        return False  # duplicate delivery: no re-update, no second email
+    q("""UPDATE orders SET payment_status='paid', status='complete'
+         WHERE session_id=? AND payment_status!='paid'""", (session_id,), write=True)
+    _maybe_send_order_email(order["email"], order["order_ref"])
+    return True
+
+
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request):
     if not STRIPE_WEBHOOK_SECRET:
@@ -454,15 +477,21 @@ async def stripe_webhook(request: Request):
     except ValueError:
         raise HTTPException(400, "Invalid webhook signature")
     obj, t = event.get("data", {}).get("object", {}), event.get("type")
-    if t in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
-        q("""UPDATE orders SET payment_status='paid', status='complete'
-             WHERE session_id=? AND payment_status!='paid'""", (obj.get("id"),), write=True)
-        order = q("SELECT * FROM orders WHERE session_id=?", (obj.get("id"),), one=True)
-        if order:
-            _maybe_send_order_email(order["email"], order["order_ref"])
+    sid = obj.get("id", "")
+    # checkout.session.completed can be UNPAID for delayed-notification payment
+    # methods (per Stripe's fulfillment docs) - it is not proof of payment.
+    if t == "checkout.session.completed":
+        if obj.get("payment_status") == "paid":
+            _mark_order_paid(sid, obj.get("amount_total"), obj.get("currency"))
+    elif t == "checkout.session.async_payment_succeeded":
+        _mark_order_paid(sid, obj.get("amount_total"), obj.get("currency"))
+    elif t == "checkout.session.async_payment_failed":
+        q("""UPDATE orders SET payment_status='failed', status='failed'
+             WHERE session_id=? AND payment_status NOT IN ('paid')""", (sid,), write=True)
     elif t == "checkout.session.expired":
-        q("UPDATE orders SET payment_status='expired', status='expired' WHERE session_id=?",
-          (obj.get("id"),), write=True)
+        # a late expiry event must never downgrade an already-paid order
+        q("""UPDATE orders SET payment_status='expired', status='expired'
+             WHERE session_id=? AND payment_status NOT IN ('paid')""", (sid,), write=True)
     return {"status": "ok"}
 
 
@@ -472,14 +501,14 @@ def payment_status(session_id: str):
     if not order:
         raise HTTPException(404, "Unknown checkout session")
     if order["provider"] == "stripe" and order["payment_status"] == "pending" and STRIPE_API_KEY:
-        # live-check Stripe for a session whose webhook has not arrived yet
+        # live-check Stripe for a session whose webhook has not arrived yet.
+        # "complete" is NOT proof of payment (delayed methods complete unpaid) -
+        # only payment_status == "paid" with the expected amount/currency is.
         try:
             sess = providers.stripe_retrieve_session(STRIPE_API_KEY, session_id)
-            if sess.get("payment_status") == "paid" or sess.get("status") == "complete":
-                q("""UPDATE orders SET payment_status='paid', status='complete'
-                     WHERE session_id=? AND payment_status!='paid'""", (session_id,), write=True)
+            if sess.get("payment_status") == "paid":
+                _mark_order_paid(session_id, sess.get("amount_total"), sess.get("currency"))
                 order = q("SELECT * FROM orders WHERE session_id=?", (session_id,), one=True)
-                _maybe_send_order_email(order["email"], order["order_ref"])
         except Exception:
             log.exception("stripe session retrieve failed")
     # provider is what this order was actually created with (None = unknown,
