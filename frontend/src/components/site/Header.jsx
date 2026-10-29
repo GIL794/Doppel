@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useClosed } from "@/lib/demo";
 import { Link } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { useOrder } from "@/context/OrderContext";
@@ -27,6 +28,7 @@ const NAV = [
 export const Header = () => {
   const { user } = useAuth();
   const { openOrder } = useOrder();
+  const closed = useClosed();
   const [menuOpen, setMenuOpen] = useState(false);
   const accountTo = user ? (user.role === "admin" ? "/admin" : "/dashboard") : "/login";
   return (
@@ -52,7 +54,7 @@ export const Header = () => {
             className="lab bg-ink text-ground px-4 py-2 rounded-full hover:bg-signal hover:text-ink transition-colors"
             data-testid="header-buy-button"
           >
-            Buy · £350
+            {closed ? "Early access" : "Buy · £350"}
           </button>
           <button
             type="button"

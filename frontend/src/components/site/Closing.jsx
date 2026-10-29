@@ -1,4 +1,5 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { useClosed } from "@/lib/demo";
 import { useOrder } from "@/context/OrderContext";
 
 const INCLUDED = [
@@ -11,10 +12,11 @@ const INCLUDED = [
 
 export const Pricing = () => {
   const { openOrder } = useOrder();
+  const closed = useClosed();
   return (
     <section id="pricing" className="bg-ground py-24 md:py-32" data-testid="pricing-section">
       <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-[200px_1fr] gap-12">
-        <p className="lab">The package</p>
+        <p className="lab">{closed ? "Planned package" : "The package"}</p>
         <div className="min-w-0 grid md:grid-cols-2 gap-12 items-center">
           <div>
             <p className="dsp big tab" data-testid="pricing-amount">£350</p>
@@ -22,7 +24,7 @@ export const Pricing = () => {
             <p className="mt-4 max-w-sm">No hidden extras. You approve the script before we render.</p>
           </div>
           <div className="border-2 border-ink bg-white shadow-signal-lg p-6" data-testid="pricing-card">
-            <div className="flex justify-between lab mb-4"><span>Checkout</span><span>Encrypted · Stripe</span></div>
+            <div className="flex justify-between lab mb-4"><span>Checkout</span><span>{closed ? "Ordering opens soon" : "Encrypted · Stripe"}</span></div>
             <ul className="space-y-3 mb-6">
               {INCLUDED.map((i) => <li key={i}>✓ {i}</li>)}
             </ul>
@@ -30,11 +32,11 @@ export const Pricing = () => {
             <button type="button" onClick={() => openOrder()}
               className="group w-full bg-signal text-ink dsp text-2xl px-6 py-5 border-2 border-ink hover:bg-ink hover:text-ground transition-colors"
               data-testid="pricing-pay-button">
-              Pay £350 &amp; start <span className="inline-block transition-transform group-hover:translate-x-1">→</span>
+              {closed ? "Ordering opens soon" : "Pay £350 & start"} <span className="inline-block transition-transform group-hover:translate-x-1">→</span>
             </button>
-            <div className="flex flex-wrap gap-2 mt-4 lab">
+            {!closed && <div className="flex flex-wrap gap-2 mt-4 lab">
               {["Visa", "Mastercard", "Apple Pay"].map((m) => <span key={m} className="border border-ink px-2 py-1">{m}</span>)}
-            </div>
+            </div>}
           </div>
         </div>
       </div>
@@ -63,12 +65,21 @@ const FAQS = [
   ["Can I try before I pay?", "Yes. Write a free script above, and make up to two free talking teasers with an account."],
 ];
 
-export const Faq = () => (
+const FAQS_CLOSED = FAQS.map(([q, a]) =>
+  q === "How fast is it?" ? [q, "Ordering is not open yet. We will publish the turnaround when it opens."]
+  : q === "Can it speak Spanish?" ? [q, "Other languages are planned, but video is not available yet."]
+  : q === "Can I try before I pay?" ? [q, "You can write a free script above. Talking avatar teasers are not available yet."]
+  : [q, a]);
+
+export const Faq = () => {
+  const closed = useClosed();
+  const faqs = closed ? FAQS_CLOSED : FAQS;
+  return (
   <section id="faq" className="bg-ground pb-24 md:pb-32" data-testid="faq-section">
     <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-[200px_1fr] gap-12">
       <p className="lab">FAQ</p>
       <Accordion type="single" collapsible className="min-w-0 border-y-2 border-ink">
-        {FAQS.map(([q, a], i) => (
+        {faqs.map(([q, a], i) => (
           <AccordionItem key={q} value={`q${i}`} className="border-b-2 border-ink last:border-b-0">
             <AccordionTrigger className="dsp text-2xl text-left hover:no-underline hover:text-signal" data-testid={`faq-q-${i}`}>{q}</AccordionTrigger>
             <AccordionContent className="text-base">{a}</AccordionContent>
@@ -78,17 +89,19 @@ export const Faq = () => (
     </div>
   </section>
 );
+};
 
 export const FinalCta = () => {
   const { openOrder } = useOrder();
+  const closed = useClosed();
   return (
     <section className="bg-signal text-ink py-24 md:py-32" data-testid="final-cta-section">
       <div className="max-w-6xl mx-auto px-6 text-center">
         <h2 className="dsp h2-xl">Stay off camera. Get seen.</h2>
         <button type="button" onClick={() => openOrder()}
           className="inline-block mt-8 bg-ink text-ground dsp text-2xl px-8 py-4 shadow-ground-md hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-[transform,box-shadow]"
-          data-testid="final-cta-buy-button">Get my video · £350</button>
-        <p className="lab mt-4">Fixed price · Secure checkout</p>
+          data-testid="final-cta-buy-button">{closed ? "Ordering opens soon" : "Get my video · £350"}</button>
+        <p className="lab mt-4">{closed ? "Early access" : "Fixed price · Secure checkout"}</p>
       </div>
     </section>
   );

@@ -46,8 +46,8 @@ export const OrderDialog = () => {
       <DialogContent className="rounded-none border-2 border-ink bg-ground shadow-signal-xl max-w-2xl max-h-[92vh] overflow-y-auto p-0" data-testid="order-dialog">
         <div className="bg-ink text-ground px-6 py-5">
           <DialogHeader>
-            <DialogTitle className="dsp text-3xl text-ground font-normal">Your promo video · £350</DialogTitle>
-            <DialogDescription className="text-ground/80">Tell us the basics. You approve the script before we render.</DialogDescription>
+            <DialogTitle className="dsp text-3xl text-ground font-normal">{payments === "closed" ? "Ordering opens soon" : "Your promo video · £350"}</DialogTitle>
+            <DialogDescription className="text-ground/80">{payments === "closed" ? "Ordering is not open yet. This form is a preview of the planned order: nothing is charged and no order is created. Planned price £350." : "Tell us the basics. You approve the script before we render."}</DialogDescription>
           </DialogHeader>
         </div>
         <form onSubmit={submit} className="px-6 pb-24 pt-2 space-y-4">
@@ -65,7 +65,7 @@ export const OrderDialog = () => {
               <Input id="o-company" required value={form.company} onChange={set("company")} className={`${fieldCls} mt-1`} data-testid="order-company-input" />
             </div>
             <div>
-              <Label className="lab">Video language</Label>
+              <Label className="lab">{payments === "closed" ? "Preferred language (planned)" : "Video language"}</Label>
               <Select value={form.language} onValueChange={set("language")}>
                 <SelectTrigger className={`${fieldCls} mt-1`} data-testid="order-language-select"><SelectValue /></SelectTrigger>
                 <SelectContent className="rounded-none border-2 border-ink">

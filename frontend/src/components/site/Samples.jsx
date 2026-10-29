@@ -1,4 +1,8 @@
-export const Samples = () => (
+import { useClosed } from "@/lib/demo";
+
+export const Samples = () => {
+  const closed = useClosed();
+  return (
   <section id="samples" className="bg-ground py-24 md:py-32" data-testid="samples-section">
     <div className="max-w-6xl mx-auto px-6">
       <div className="flex flex-wrap items-end justify-between gap-6 mb-12">
@@ -39,7 +43,7 @@ export const Samples = () => (
             <p className="lab mt-3">1:1 · Feed posts</p>
           </div>
           <div className="col-span-2 card-pop border-2 border-ink bg-ink text-ground p-4">
-            <p className="lab mb-3">Voice in any language</p>
+            <p className="lab mb-3">{closed ? "Voice sample" : "Voice in any language"}</p>
             <svg viewBox="0 0 200 30" className="w-full h-6" aria-hidden="true">
               <g fill="#ff5a2e">
                 {[[0,12,6],[12,6,18],[24,2,26],[36,9,12],[48,4,22],[60,11,8],[72,5,20],[84,0,30],[96,8,14],[108,3,24],[120,10,10],[132,6,18],[144,12,6],[156,4,22],[168,9,12],[180,12,6]].map(([x, y, h]) => (
@@ -53,3 +57,4 @@ export const Samples = () => (
     </div>
   </section>
 );
+};

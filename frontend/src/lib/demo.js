@@ -57,3 +57,9 @@ export function useDemo() {
   return flags;
 }
 
+
+// Closed-ordering mode (production build before payments are connected): the
+// site must not promise checkout, delivery times or language support.
+export function useClosed() {
+  return useDemo().payments === "closed";
+}

@@ -1,3 +1,4 @@
+import { useClosed } from "@/lib/demo";
 import { Link } from "react-router-dom";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScriptPreview } from "@/components/site/ScriptPreview";
@@ -37,17 +38,19 @@ const TeaserPromo = () => {
   );
 };
 
-export const TryFree = () => (
+export const TryFree = () => {
+  const closed = useClosed();
+  return (
   <section id="try" className="bg-blush py-24 md:py-32 border-y-2 border-ink" data-testid="try-section">
     <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-[200px_1fr] gap-12">
       <p className="lab">Try it free</p>
       <div className="min-w-0">
         <h2 className="dsp h2-xl mb-4">Test drive your video</h2>
-        <p className="max-w-xl mb-10">Get a 30-second script for your business in seconds, then hear your own avatar say it. No card needed.</p>
+        <p className="max-w-xl mb-10">Get a 30-second script for your business in seconds{closed ? ". Talking avatar teasers are not available yet." : ", then hear your own avatar say it."} No card needed.</p>
         <Tabs defaultValue="script">
           <TabsList className="bg-transparent p-0 h-auto gap-3 mb-8 flex-wrap justify-start">
             <TabsTrigger value="script" className={tabCls} data-testid="try-tab-script">1 · Write my script</TabsTrigger>
-            <TabsTrigger value="teaser" className={tabCls} data-testid="try-tab-teaser">2 · Make a talking teaser</TabsTrigger>
+            {!closed && <TabsTrigger value="teaser" className={tabCls} data-testid="try-tab-teaser">2 · Make a talking teaser</TabsTrigger>}
           </TabsList>
           <TabsContent value="script"><ScriptPreview /></TabsContent>
           <TabsContent value="teaser"><TeaserPromo /></TabsContent>
@@ -56,3 +59,4 @@ export const TryFree = () => (
     </div>
   </section>
 );
+};
