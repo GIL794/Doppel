@@ -16,8 +16,7 @@ const Card = ({ children, testId }) => (
 export function PaymentSuccess() {
   const [params] = useSearchParams();
   const { user } = useAuth();
-  const { email } = useDemo();
-  const emailMissing = email === "demo"; // only explicit "not configured" justifies the claim
+  const { email } = useDemo(); // tri-state: "real" | "demo" | "unknown" - passed through, never collapsed
   const [state, setState] = useState({ status: "checking" });
 
   useEffect(() => {
@@ -50,7 +49,7 @@ export function PaymentSuccess() {
               // Copy comes from THIS order's stored provider via paymentCopy:
               // only explicit mock says "no payment taken", only a verified live
               // provider says "payment received", anything else is unverified.
-              const copy = paymentCopy({ provider: state.provider, emailMissing });
+              const copy = paymentCopy({ provider: state.provider, email });
               return (
                 <>
                   <p className="lab text-signal mb-3" data-testid="payment-eyebrow">{copy.eyebrow}</p>

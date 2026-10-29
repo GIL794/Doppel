@@ -1,38 +1,53 @@
 import { paymentCopy } from "./paymentCopy";
 
 describe("paymentCopy", () => {
-  it("explicit mock: no-payment claim, email claim only when email explicitly missing", () => {
-    const a = paymentCopy({ provider: "mock", emailMissing: true });
+  it("mock provider claims demo, and 'no emails' only when email is explicitly demo", () => {
+    const a = paymentCopy({ provider: "mock", email: "demo" });
     expect(a.variant).toBe("demo");
-    expect(a.eyebrow).toMatch(/Demo order recorded/);
-    expect(a.body(7)).toBe("Order #7 was recorded in this local build. No payment was taken. No emails will be sent.");
-    const b = paymentCopy({ provider: "mock", emailMissing: false });
-    expect(b.body(7)).not.toMatch(/No emails/);
+    expect(a.body(1)).toContain("No payment was taken");
+    expect(a.body(1)).toContain("No emails will be sent");
+    const b = paymentCopy({ provider: "mock", email: "real" });
+    expect(b.body(1)).toContain("No payment was taken");
+    expect(b.body(1)).not.toContain("No emails will be sent");
+    // unknown email: no email claim in either direction
+    const c = paymentCopy({ provider: "mock", email: "unknown" });
+    expect(c.body(1)).toContain("No payment was taken");
+    expect(c.body(1)).not.toContain("email");
   });
 
-  it("live provider: received claim; email promise only when email connected", () => {
-    const a = paymentCopy({ provider: "stripe", emailMissing: false });
+  it("live provider promises email only when email is real", () => {
+    const a = paymentCopy({ provider: "stripe", email: "real" });
     expect(a.variant).toBe("paid");
-    expect(a.body(7)).toBe("Order #7. We'll email you a script to approve.");
-    const b = paymentCopy({ provider: "stripe", emailMissing: true });
-    expect(b.body(7)).toMatch(/no confirmation email/);
-    expect(b.body(7)).not.toMatch(/We'll email/);
-    // no video delivery promise in this rebuild
-    expect(a.body(7)).not.toMatch(/video lands/);
+    expect(a.title).not.toMatch(/double|video/i);
+    expect(a.body(1)).toContain("We'll email you");
+    expect(a.body(1)).not.toMatch(/video/i);
   });
 
-  it("null provider (pre-migration order): unverified, claims nothing either way", () => {
-    const c = paymentCopy({ provider: null, emailMissing: true });
-    expect(c.variant).toBe("unverified");
-    expect(c.body(7)).not.toMatch(/No payment was taken/);
-    expect(c.body(7)).not.toMatch(/Payment received/);
-    expect(c.body(7)).toMatch(/cannot verify/);
+  it("live provider with email demo states email is missing, does not promise it", () => {
+    const b = paymentCopy({ provider: "stripe", email: "demo" });
+    expect(b.body(1)).toContain("no confirmation email will arrive");
+    expect(b.body(1)).not.toContain("We'll email you a script");
   });
 
-  it("unexpected provider string: unverified, never received and never no-charge", () => {
-    const c = paymentCopy({ provider: "paypal", emailMissing: false });
+  it("live provider with email unknown claims neither promise nor absence", () => {
+    const c = paymentCopy({ provider: "stripe", email: "unknown" });
+    expect(c.variant).toBe("paid");
+    expect(c.body(1)).toContain("could not be verified");
+    expect(c.body(1)).not.toContain("We'll email you a script");
+    expect(c.body(1)).not.toContain("no confirmation email will arrive");
+  });
+
+  it("null provider claims nothing in either direction", () => {
+    const c = paymentCopy({ provider: null, email: "demo" });
     expect(c.variant).toBe("unverified");
-    expect(c.eyebrow).not.toMatch(/Payment received/);
-    expect(c.body(7)).not.toMatch(/No payment was taken/);
+    expect(c.body(1)).not.toContain("No payment was taken");
+    expect(c.body(1)).not.toContain("Payment received");
+    expect(c.body(1)).not.toMatch(/email/i);
+  });
+
+  it("unexpected nonempty provider stays unverified, never real", () => {
+    const c = paymentCopy({ provider: "paypal", email: "real" });
+    expect(c.variant).toBe("unverified");
+    expect(c.body(1)).not.toContain("We'll email you");
   });
 });

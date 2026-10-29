@@ -3,11 +3,13 @@
 // evidence from /api/payments/status), never from global config alone.
 // Only an explicit "mock" provider justifies "no payment was taken"; only an
 // explicit live provider justifies "payment received"; anything else is
-// honestly unverified.
+// honestly unverified. Email claims follow the same tri-state rule: promise
+// email only when email is explicitly "real", state it is missing only when
+// explicitly "demo", and say it is unverified when "unknown".
 
 const LIVE_PROVIDERS = ["stripe"];
 
-export function paymentCopy({ provider, emailMissing }) {
+export function paymentCopy({ provider, email }) {
   if (provider === "mock") {
     return {
       variant: "demo",
@@ -15,7 +17,7 @@ export function paymentCopy({ provider, emailMissing }) {
       title: "Your demo order is in.",
       body: (ref) =>
         `Order #${ref} was recorded in this local build. No payment was taken.` +
-        (emailMissing ? " No emails will be sent." : ""),
+        (email === "demo" ? " No emails will be sent." : ""),
     };
   }
   if (LIVE_PROVIDERS.includes(provider)) {
@@ -25,9 +27,11 @@ export function paymentCopy({ provider, emailMissing }) {
       title: "You're in.",
       body: (ref) =>
         `Order #${ref}.` +
-        (emailMissing
-          ? " Email is not connected in this build, so no confirmation email will arrive."
-          : " We'll email you a script to approve."),
+        (email === "real"
+          ? " We'll email you a script to approve."
+          : email === "demo"
+            ? " Email is not connected in this build, so no confirmation email will arrive."
+            : " Email delivery could not be verified in this build."),
     };
   }
   return {
