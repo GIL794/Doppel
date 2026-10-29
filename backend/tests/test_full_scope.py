@@ -180,6 +180,8 @@ def workflow(monkeypatch):
     customer.post("/api/payments/checkout", json={"name": "C", "email": "c@example.com", "company": "Co"})
     admin = TestClient(server.app)
     admin.post("/api/auth/register", json={"name": "B", "email": "boss@example.com", "password": "password123"})
+    # Out-of-band promotion: password registration must never grant admin.
+    server.q("UPDATE users SET role='admin' WHERE email='boss@example.com'", write=True)
     return server, customer, admin, emails
 
 
@@ -236,3 +238,129 @@ def test_admin_sees_production_status(workflow):
     server, customer, admin, emails = workflow
     rows = admin.get("/api/admin/orders").json()
     assert rows[0]["production_status"] == "in_production"
+
+
+# ============================================== review-fix regression tests
+def test_reset_link_ignores_client_origin(monkeypatch):
+    server = load(monkeypatch, SMTP_HOST="smtp.example.com")
+    sent = []
+    monkeypatch.setattr(providers, "send_password_reset_email",
+                        lambda cfg, *, to_email, reset_link, **k: sent.append(reset_link) or True)
+    client = TestClient(server.app)
+    client.post("/api/auth/register", json={"name": "V", "email": "v@example.com", "password": "password123"})
+    client.post("/api/auth/forgot-password",
+                json={"email": "v@example.com", "origin_url": "https://attacker.example"})
+    assert len(sent) == 1
+    assert sent[0].startswith("http://localhost:3000/reset-password?token=")
+    assert "attacker" not in sent[0]
+
+
+def test_password_registration_never_grants_admin(monkeypatch):
+    server = load(monkeypatch, ADMIN_EMAILS="boss@example.com")
+    client = TestClient(server.app)
+    r = client.post("/api/auth/register", json={"name": "X", "email": "boss@example.com", "password": "password123"})
+    assert r.json()["role"] == "customer"
+    assert client.get("/api/admin/overview").status_code == 403
+    client.post("/api/auth/logout")
+    client.post("/api/auth/login", json={"email": "boss@example.com", "password": "password123"})
+    assert client.get("/api/admin/overview").status_code == 403  # no promotion at login either
+
+
+def test_google_login_promotes_admin_with_verified_email(monkeypatch):
+    server, client = _google_client(monkeypatch)
+    server.ADMIN_EMAILS.add("g@example.com")
+    state = _login_state(client)
+    client.get(f"/api/auth/google/callback?code=abc&state={state}", follow_redirects=False)
+    assert client.get("/api/auth/me").json()["role"] == "admin"
+    assert client.get("/api/admin/overview").status_code == 200
+
+
+def test_oauth_account_password_login_returns_401_not_500(monkeypatch):
+    server, client = _google_client(monkeypatch)
+    state = _login_state(client)
+    client.get(f"/api/auth/google/callback?code=abc&state={state}", follow_redirects=False)
+    client.post("/api/auth/logout")
+    r = client.post("/api/auth/login", json={"email": "g@example.com", "password": "whatever123"})
+    assert r.status_code == 401
+
+
+def test_google_callback_requires_browser_bound_state(monkeypatch):
+    server, client1 = _google_client(monkeypatch)
+    state = _login_state(client1)  # sets the gstate cookie in client1 only
+    other_browser = TestClient(server.app)
+    r = other_browser.get(f"/api/auth/google/callback?code=abc&state={state}", follow_redirects=False)
+    assert r.headers["location"].endswith("/login?google=failed")
+    assert other_browser.get("/api/auth/me").status_code == 401
+    # the legitimate browser still completes with the same state
+    r = client1.get(f"/api/auth/google/callback?code=abc&state={state}", follow_redirects=False)
+    assert r.headers["location"].endswith("/dashboard")
+
+
+def test_guest_order_hidden_until_email_verified(monkeypatch):
+    server = load(monkeypatch)
+    guest = TestClient(server.app)
+    guest.post("/api/payments/checkout", json={"name": "G", "email": "v@example.com", "company": "Co"})
+    # password account with the same email string: NO access to the guest order
+    pw = TestClient(server.app)
+    pw.post("/api/auth/register", json={"name": "V", "email": "v@example.com", "password": "password123"})
+    assert pw.get("/api/orders/mine").json() == []
+    assert pw.post("/api/orders/1/script/approve").status_code == 403
+    # a Google-verified account with the same email DOES inherit the guest order
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "cid")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "csec")
+    import importlib as il
+    server = il.reload(server)
+    monkeypatch.setattr(providers, "google_exchange_code", lambda *a, **k: {"access_token": "t"})
+    monkeypatch.setattr(providers, "google_fetch_userinfo",
+                        lambda *a, **k: {"email": "v@example.com", "email_verified": True, "name": "V", "sub": "s"})
+    g = TestClient(server.app)
+    r = g.get("/api/auth/google/login", follow_redirects=False)
+    from urllib.parse import urlparse, parse_qs
+    st = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+    g.get(f"/api/auth/google/callback?code=x&state={st}", follow_redirects=False)
+    mine = g.get("/api/orders/mine").json()
+    assert len(mine) == 1 and mine[0]["email"] == "v@example.com"
+
+
+def test_teaser_photo_must_belong_to_requester(monkeypatch):
+    server = load(monkeypatch)
+    import io
+    PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+    a = TestClient(server.app)
+    a.post("/api/auth/register", json={"name": "A", "email": "a@example.com", "password": "password123"})
+    fid = a.post("/api/uploads", files={"file": ("p.png", io.BytesIO(PNG), "image/png")},
+                 data={"kind": "photo"}).json()["file_id"]
+    b = TestClient(server.app)
+    b.post("/api/auth/register", json={"name": "B", "email": "b@example.com", "password": "password123"})
+    r = b.post("/api/teasers", json={"photo_file_id": fid, "text": "hello there world"})
+    assert r.status_code == 400
+
+
+def test_payment_status_surfaces_expired(monkeypatch):
+    server, client = _stripe_client(monkeypatch)
+    _fire(client, "checkout.session.expired", {"id": "cs_test_real"})
+    body = client.get("/api/payments/status/cs_test_real").json()
+    assert body["payment_status"] == "expired" and body["status"] == "expired"
+
+
+def test_checkout_redirects_use_server_origin_only(monkeypatch):
+    server = load(monkeypatch)
+    client = TestClient(server.app)
+    r = client.post("/api/payments/checkout", json={
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "https://evil.example"})
+    assert r.json()["checkout_url"].startswith("http://localhost:3000/")
+    server2 = load(monkeypatch, PAYMENT_PROVIDER="stripe", STRIPE_API_KEY="sk_test_x")
+    captured = {}
+    monkeypatch.setattr(providers, "stripe_create_checkout",
+                        lambda *a, **k: captured.update(k) or {"session_id": "cs_1", "checkout_url": "u"})
+    client2 = TestClient(server2.app)
+    client2.post("/api/payments/checkout", json={
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "https://evil.example"})
+    assert captured["origin_url"] == "http://localhost:3000"
+
+
+def test_stripe_without_key_reports_misconfigured_not_real(monkeypatch):
+    server = load(monkeypatch, PAYMENT_PROVIDER="stripe")
+    body = server.app and TestClient(server.app).get("/api").json()
+    assert body["capabilities"]["payments"] == "misconfigured"
+    assert body["demo"] is True

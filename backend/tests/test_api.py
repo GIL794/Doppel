@@ -118,7 +118,9 @@ def test_script_preview_sse():
 
 def test_admin_overview_and_orders():
     r = client.post("/api/auth/register", json={"name": "Boss", "email": "admin@example.com", "password": "password123"})
-    assert r.json()["role"] == "admin"
+    assert r.json()["role"] == "customer"  # password registration never grants admin
+    # Out-of-band promotion (what a real deployment does for the owner):
+    server.q("UPDATE users SET role='admin' WHERE email='admin@example.com'", write=True)
     overview = client.get("/api/admin/overview").json()
     assert overview["paid_orders"] == 1 and overview["revenue_gbp"] == 350
     assert overview["customers"] == 2 and overview["teasers"] == 2 and overview["scripts"] == 1

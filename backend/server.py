@@ -89,13 +89,13 @@ db.executescript(
     CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'customer',
-        created_at TEXT NOT NULL);
+        email_verified INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS sessions (
         token TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL,
         expires_at REAL NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS files (
         file_id TEXT PRIMARY KEY, filename TEXT, mime TEXT, kind TEXT,
-        path TEXT, size INTEGER, created_at TEXT NOT NULL);
+        path TEXT, size INTEGER, owner_user_id TEXT, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS orders (
         order_ref INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT UNIQUE, user_id TEXT, name TEXT, email TEXT, company TEXT,
@@ -131,6 +131,8 @@ def _ensure_column(table, name, ddl):
         pass  # column already exists (fresh schema above includes it)
 
 
+_ensure_column("users", "email_verified", "INTEGER NOT NULL DEFAULT 0")
+_ensure_column("files", "owner_user_id", "TEXT")
 _ensure_column("orders", "provider", "TEXT")
 _ensure_column("orders", "production_status", "TEXT NOT NULL DEFAULT 'awaiting_payment'")
 _ensure_column("orders", "script_text", "TEXT")
@@ -164,7 +166,10 @@ def hash_password(password, salt=None):
 
 
 def check_password(password, stored):
-    salt, digest = stored.split("$", 1)
+    try:
+        salt, digest = stored.split("$", 1)
+    except ValueError:
+        return False  # passwordless account (e.g. created via Google OAuth)
     return hmac.compare_digest(hash_password(password, salt).split("$", 1)[1], digest)
 
 
@@ -295,13 +300,14 @@ def root():
     # Per-capability honesty flags: the frontend labels itself from these, so a
     # capability only stops being called "demo" when it is genuinely connected.
     capabilities = {
-        "payments": PAYMENT_PROVIDER,          # "mock" = simulated, no real charge
+        "payments": (("stripe" if STRIPE_API_KEY else "misconfigured")
+                     if PAYMENT_PROVIDER == "stripe" else PAYMENT_PROVIDER),
         "ai_video": "configured" if (TEASER_PROVIDER == "fal" and FAL_KEY) else "none",
         "ai_script": "configured" if (SCRIPT_PROVIDER == "gemini" and GEMINI_API_KEY) else "template",
         "email": "configured" if EMAIL_PROVIDER == "smtp" else "not_configured",
         "google_auth": "configured" if (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET) else "not_configured",
     }
-    demo = any(v in ("mock", "none", "template", "not_configured")
+    demo = any(v in ("mock", "none", "template", "not_configured", "misconfigured")
                for v in capabilities.values())
     return {"app": "DoppelAI API", "status": "ok", "demo": demo,
             "capabilities": capabilities,
@@ -315,9 +321,11 @@ def register(body: RegisterIn, response: Response):
     if q("SELECT id FROM users WHERE email=?", (email,), one=True):
         raise HTTPException(409, "An account with this email already exists")
     uid = uuid.uuid4().hex
-    role = "admin" if email in ADMIN_EMAILS else "customer"
-    q("INSERT INTO users (id, name, email, password_hash, role, created_at) VALUES (?,?,?,?,?,?)",
-      (uid, body.name.strip(), email, hash_password(body.password), role, now()), write=True)
+    # Password registration proves no email ownership, so it can never grant
+    # admin - ADMIN_EMAILS promotion happens only on a verified-email path
+    # (Google OAuth) or out-of-band (existing admin / direct DB change).
+    q("INSERT INTO users (id, name, email, password_hash, role, email_verified, created_at) VALUES (?,?,?,?,?,0,?)",
+      (uid, body.name.strip(), email, hash_password(body.password), "customer", now()), write=True)
     user = q("SELECT * FROM users WHERE id=?", (uid,), one=True)
     set_auth_cookies(response, uid)
     return user_public(user)
@@ -328,7 +336,6 @@ def login(body: LoginIn, response: Response):
     user = q("SELECT * FROM users WHERE email=?", (body.email.lower(),), one=True)
     if not user or not check_password(body.password, user["password_hash"]):
         raise HTTPException(401, "Wrong email or password")
-    user = apply_admin_flag(user)
     set_auth_cookies(response, user["id"])
     return user_public(user)
 
@@ -353,7 +360,6 @@ def refresh(request: Request, response: Response):
     user = user_from_token(request.cookies.get("refresh_token"), "refresh")
     if not user:
         raise HTTPException(401, "Session expired")
-    user = apply_admin_flag(user)
     response.set_cookie("access_token", new_session(user["id"], "access", ACCESS_TTL),
                         httponly=True, samesite="lax", max_age=ACCESS_TTL)
     return user_public(user)
@@ -366,8 +372,9 @@ def forgot_password(body: ForgotIn):
         token = secrets.token_urlsafe(32)
         q("INSERT INTO password_resets (token, user_id, expires_at, created_at) VALUES (?,?,?,?)",
           (token, user["id"], time.time() + RESET_TTL, now()), write=True)
-        origin = (body.origin_url or FRONTEND_ORIGIN).rstrip("/")
-        link = f"{origin}/reset-password?token={token}"
+        # Always the server-configured origin: a client-supplied origin_url
+        # would let anyone email a victim a genuine token on an attacker host.
+        link = f"{FRONTEND_ORIGIN}/reset-password?token={token}"
         if EMAIL_PROVIDER == "smtp":
             try:
                 providers.send_password_reset_email(_smtp_cfg(), to_email=user["email"], reset_link=link)
@@ -400,14 +407,22 @@ def google_login(next: str = "/dashboard"):
     state = secrets.token_urlsafe(24)
     q("INSERT INTO oauth_states (state, next, expires_at, created_at) VALUES (?,?,?,?)",
       (state, next, time.time() + 600, now()), write=True)
-    return RedirectResponse(
+    resp = RedirectResponse(
         providers.google_authorization_url(GOOGLE_CLIENT_ID, GOOGLE_REDIRECT_URI, state),
         status_code=302)
+    # Bind the state to this browser so a captured callback URL cannot log a
+    # victim into the attacker's account.
+    resp.set_cookie("gstate", state, httponly=True, samesite="lax", max_age=600)
+    return resp
 
 
 @app.get("/api/auth/google/callback")
-def google_callback(code: str = "", state: str = ""):
+def google_callback(request: Request, code: str = "", state: str = ""):
     fail = RedirectResponse(f"{FRONTEND_ORIGIN}/login?google=failed", status_code=302)
+    fail.delete_cookie("gstate")
+    cookie = request.cookies.get("gstate", "")
+    if not cookie or not hmac.compare_digest(cookie, state):
+        return fail  # state not bound to this browser
     row = q("SELECT * FROM oauth_states WHERE state=?", (state,), one=True)
     if not row or row["expires_at"] < time.time() or not code:
         return fail
@@ -423,16 +438,21 @@ def google_callback(code: str = "", state: str = ""):
     if not email or info.get("email_verified") not in (True, "true"):
         log.warning("google oauth: unverified or missing email")
         return fail
+    # Google verified this email ownership, so the account is marked verified
+    # and ADMIN_EMAILS promotion is safe to apply on this path only.
     user = q("SELECT * FROM users WHERE email=?", (email,), one=True)
     if not user:
         uid = uuid.uuid4().hex
-        role = "admin" if email in ADMIN_EMAILS else "customer"
-        q("INSERT INTO users (id, name, email, password_hash, role, created_at) VALUES (?,?,?,?,?,?)",
+        q("INSERT INTO users (id, name, email, password_hash, role, email_verified, created_at) VALUES (?,?,?,?,?,1,?)",
           (uid, (info.get("name") or email.split("@")[0])[:120], email,
-           "!google-oauth", role, now()), write=True)
+           "!google-oauth", "customer", now()), write=True)
         user = q("SELECT * FROM users WHERE id=?", (uid,), one=True)
+    elif not user["email_verified"]:
+        q("UPDATE users SET email_verified=1 WHERE id=?", (user["id"],), write=True)
+        user = q("SELECT * FROM users WHERE id=?", (user["id"],), one=True)
     user = apply_admin_flag(user)
     resp = RedirectResponse(f"{FRONTEND_ORIGIN}{row['next']}", status_code=302)
+    resp.delete_cookie("gstate")
     set_auth_cookies(resp, user["id"])
     return resp
 
@@ -459,8 +479,8 @@ def upload(file: UploadFile = File(...), kind: str = Form("photo"), user=Depends
     ext = ALLOWED_IMAGE[file.content_type]
     path = UPLOAD_DIR / f"{fid}{ext}"
     path.write_bytes(data)
-    q("INSERT INTO files (file_id, filename, mime, kind, path, size, created_at) VALUES (?,?,?,?,?,?,?)",
-      (fid, file.filename, file.content_type, kind, str(path), len(data), now()), write=True)
+    q("INSERT INTO files (file_id, filename, mime, kind, path, size, owner_user_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
+      (fid, file.filename, file.content_type, kind, str(path), len(data), user["id"], now()), write=True)
     return {"file_id": fid, "filename": file.filename, "mime": file.content_type, "size": len(data)}
 
 
@@ -479,12 +499,14 @@ def checkout(body: CheckoutIn, request: Request):
         raise HTTPException(503, "Card payments are not configured in this build (set STRIPE_API_KEY).")
     user = user_from_token(request.cookies.get("access_token"), "access")
     session_id = uuid.uuid4().hex
-    origin = (body.origin_url or FRONTEND_ORIGIN).rstrip("/")
+    # Redirect targets are always the server-configured origin, never a
+    # client-supplied one (a payment URL must not bounce through attacker hosts).
+    origin = FRONTEND_ORIGIN
     checkout_url = None
     # MOCK payment provider: no real charge. The order is marked paid immediately
     # and the "checkout" redirects straight to the success page, mirroring the
-    # original Stripe round-trip. Swap PAYMENT_PROVIDER=stripe + STRIPE_API_KEY
-    # for a real integration (not included).
+    # original Stripe round-trip. A real Stripe adapter is included and
+    # activates with PAYMENT_PROVIDER=stripe + owner-supplied keys.
     q("""INSERT INTO orders (session_id, user_id, name, email, company, language, avatar_style,
          brief, photo_file_id, logo_file_id, amount_gbp, provider, payment_status, status, created_at)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -624,15 +646,23 @@ def payment_status(session_id: str):
     # provider is what this order was actually created with (None = unknown,
     # e.g. orders predating the column); the frontend must not relabel it from
     # current config.
+    status_map = {"paid": "complete", "expired": "expired", "failed": "failed"}
     return {"session_id": session_id, "payment_status": order["payment_status"],
-            "status": "complete" if order["payment_status"] == "paid" else "open",
+            "status": status_map.get(order["payment_status"], "open"),
             "order_ref": order["order_ref"], "provider": order["provider"]}
 
 
 @app.get("/api/orders/mine")
 def my_orders(user=Depends(current_user)):
-    rows = q("SELECT * FROM orders WHERE payment_status='paid' AND (user_id=? OR email=?) ORDER BY order_ref DESC",
-             (user["id"], user["email"]))
+    # Guest orders attach to an account by email ONLY when that email's
+    # ownership was verified (Google path) - a matching string alone proves
+    # nothing on the password path.
+    if user["email_verified"]:
+        rows = q("""SELECT * FROM orders WHERE payment_status='paid' AND (user_id=? OR email=?)
+                    ORDER BY order_ref DESC""", (user["id"], user["email"]))
+    else:
+        rows = q("SELECT * FROM orders WHERE payment_status='paid' AND user_id=? ORDER BY order_ref DESC",
+                 (user["id"],))
     return [dict(r) for r in rows]
 
 
@@ -653,8 +683,11 @@ def _order_or_404(order_ref):
 
 
 def _own_order(order, user):
-    if order["user_id"] != user["id"] and order["email"].lower() != user["email"].lower():
-        raise HTTPException(403, "That order belongs to a different account")
+    if order["user_id"] == user["id"]:
+        return
+    if user["email_verified"] and order["email"].lower() == user["email"].lower():
+        return
+    raise HTTPException(403, "That order belongs to a different account")
 
 
 @app.post("/api/admin/orders/{order_ref}/script")
@@ -715,15 +748,16 @@ def _finish_teaser(teaser_id):
         try:
             t = q("SELECT * FROM teasers WHERE teaser_id=?", (teaser_id,), one=True)
             f = q("SELECT * FROM files WHERE file_id=?", (t["photo_file_id"],), one=True)
-            data = (UPLOAD_DIR / f["stored_name"]).read_bytes()
+            data = Path(f["path"]).read_bytes()
             video = providers.fal_generate_talking_avatar(
                 FAL_KEY, model=FAL_MODEL, image_bytes=data,
                 image_mime=f["mime"], text=t["text"])
             vid = uuid.uuid4().hex
             (UPLOAD_DIR / f"{vid}.mp4").write_bytes(video)
-            q("""INSERT INTO files (file_id, stored_name, original_filename, mime, kind, created_at)
-                 VALUES (?,?,?,?,?,?)""",
-              (vid, f"{vid}.mp4", "teaser.mp4", "video/mp4", "video", now()), write=True)
+            q("""INSERT INTO files (file_id, filename, mime, kind, path, size, created_at)
+                 VALUES (?,?,?,?,?,?,?)""",
+              (vid, "teaser.mp4", "video/mp4", "video",
+               str(UPLOAD_DIR / f"{vid}.mp4"), len(video), now()), write=True)
             q("UPDATE teasers SET status='done', video_file_id=? WHERE teaser_id=?",
               (vid, teaser_id), write=True)
             return
@@ -751,7 +785,8 @@ def create_teaser(body: TeaserIn, user=Depends(current_user)):
     count = len(q("SELECT teaser_id FROM teasers WHERE user_id=?", (user["id"],)))
     if count >= FREE_TEASERS:
         raise HTTPException(400, "You've used your free teasers. Order a full video to keep going.")
-    if not q("SELECT file_id FROM files WHERE file_id=?", (body.photo_file_id,), one=True):
+    photo = q("SELECT file_id, owner_user_id FROM files WHERE file_id=?", (body.photo_file_id,), one=True)
+    if not photo or photo["owner_user_id"] != user["id"]:
         raise HTTPException(400, "Upload a clear, front-facing photo first")
     tid = uuid.uuid4().hex
     q("""INSERT INTO teasers (teaser_id, user_id, photo_file_id, text, voice_description, status, created_at)

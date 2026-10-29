@@ -45,9 +45,11 @@ Everything else:
 - **Teaser avatar videos fail loudly.** The original used an external AI video
   provider. With none configured, teasers move from `processing` to `failed`
   with an explicit explanation. No fake video output is produced.
-- **Script preview is a template, not AI.** The endpoint streams the same
-  HOOK / SCRIPT / CTA format the frontend parses, generated from a fixed
-  template. No AI model is called.
+- **Script preview defaults to a template, not AI.** A Gemini adapter is
+  included (original build's recovered prompt) and activates with
+  `SCRIPT_PROVIDER=gemini` + an owner key; otherwise the endpoint streams the
+  same HOOK / SCRIPT / CTA format from a fixed template and the banner says
+  "script previews templated".
 - **Google sign-in is off until the owner registers a Google OAuth client.**
   The original went through Emergent's hosted auth (`auth.emergentagent.com`),
   which is not reusable. This build implements the standard Google OAuth2
@@ -55,7 +57,23 @@ Everything else:
   when `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` are set; otherwise the
   button bounces back with a clear notice. Email/password auth works fully.
 - **Password reset emails send only when SMTP is configured** (`SMTP_HOST` and
-  friends); without SMTP the reset link is logged, never emailed.
+  friends); without SMTP the reset link is logged, never emailed. Reset links
+  are always built from the server-configured `FRONTEND_ORIGIN`, never from
+  client-supplied origins.
+
+## Security model (independent-review fixes)
+
+- Password registration never grants admin; `ADMIN_EMAILS` promotion applies
+  only on the Google OAuth path (Google-verified email) or out-of-band.
+- Google OAuth state is single-use, 10-minute, and bound to the initiating
+  browser with an HttpOnly cookie; only Google-verified emails create/sign in.
+- Guest orders attach to an account by email only after that email is verified
+  (Google); password-registered accounts see only their own checkouts.
+- Payment fulfillment is idempotent and fails closed: verified `paid` status,
+  expected amount/currency, matching provider and session; expiry/failure
+  events never downgrade a paid order; mock payments never send real email.
+- Teasers accept only photos uploaded by the requesting account; payment and
+  reset redirect targets come from server config only.
 - **Paid-video production is manual, as the original intended.** The original
   promised "You approve the script before we render" and its app tracked only
   payment status (the dashboard hardcoded "In production"); production was
@@ -66,9 +84,15 @@ Everything else:
 
 ## Verified
 
-- `python -m pytest tests -q` - 8 passed (auth lifecycle incl. refresh/logout,
-  upload + file serving, mock checkout + status + my orders, teaser lifecycle +
-  free limit, SSE script preview, admin overview/orders + 403 for non-admins,
-  password reset flow, Google sign-in 501).
-- `npm run build` (CRACO) - production build compiles clean.
-- Live smoke test: uvicorn serving `/api`, register, `/auth/me`, mock checkout.
+- `python -m pytest tests -q` - 56 passed: auth lifecycle incl. refresh/logout,
+  uploads + file serving, checkout + payment status, teaser lifecycle, SSE
+  script preview, admin desk, password reset, provider adapters (Stripe/Gemini/
+  fal/SMTP/Google OAuth) with fake transports, payment fail-closed +
+  idempotency + expiry guards, the order script-approval workflow, and
+  regression tests for the independent-review attack paths (reset-origin
+  poisoning, registration admin escalation, OAuth login CSRF, unverified-email
+  order access, cross-user teaser photos, misconfigured-Stripe capability).
+- `npx craco test` - 14 passed (capability mapping, payment copy).
+- `npx craco build` - production build compiles clean.
+- Playwright journeys (Chromium): responsive menu/order/script-review flows at
+  mobile, tablet and desktop widths.
