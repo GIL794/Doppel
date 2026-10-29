@@ -232,9 +232,18 @@ app.add_middleware(
 
 @app.get("/api")
 def root():
-    demo = PAYMENT_PROVIDER == "mock" or TEASER_PROVIDER == "none"
+    # Per-capability honesty flags: the frontend labels itself from these, so a
+    # capability only stops being called "demo" when it is genuinely connected.
+    capabilities = {
+        "payments": PAYMENT_PROVIDER,          # "mock" = simulated, no real charge
+        "ai_video": TEASER_PROVIDER,           # "none" = not connected
+        "email": "not_configured",             # no SMTP in this build
+        "google_auth": "unavailable",          # was Emergent-hosted in the original
+    }
+    demo = (capabilities["payments"] == "mock" or capabilities["ai_video"] == "none"
+            or capabilities["email"] == "not_configured" or capabilities["google_auth"] == "unavailable")
     return {"app": "Aipromovids API", "status": "ok", "demo": demo,
-            "payment_provider": PAYMENT_PROVIDER, "teaser_provider": TEASER_PROVIDER,
+            "capabilities": capabilities,
             "note": "rebuilt backend (see docs/RECOVERY.md)"}
 
 

@@ -15,7 +15,8 @@ const Card = ({ children, testId }) => (
 export function PaymentSuccess() {
   const [params] = useSearchParams();
   const { user } = useAuth();
-  const demo = useDemo();
+  const { payments_simulated, email_missing } = useDemo();
+  const demo = payments_simulated || email_missing;
   const [state, setState] = useState({ status: "checking" });
 
   useEffect(() => {

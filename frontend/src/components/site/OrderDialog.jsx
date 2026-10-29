@@ -19,7 +19,7 @@ const EMPTY = { name: "", email: "", company: "", language: "English", avatar_st
 export const OrderDialog = () => {
   const { open, setOpen, prefill } = useOrder();
   const { user } = useAuth();
-  const demo = useDemo();
+  const { payments_simulated: demo } = useDemo();
   const [form, setForm] = useState(EMPTY);
   const [loading, setLoading] = useState(false);
 
