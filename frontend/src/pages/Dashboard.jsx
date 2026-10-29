@@ -4,10 +4,11 @@ import { Shell } from "@/components/site/Shell";
 import { TeaserStudio } from "@/components/site/TeaserStudio";
 import { useAuth } from "@/context/AuthContext";
 import { useOrder } from "@/context/OrderContext";
-import { api, formatApiError } from "@/lib/api";
+import { api, formatApiError, fileUrl } from "@/lib/api";
 
 const STATUS_LABELS = {
   in_production: "In production",
+  drafting: "Drafting your script",
   script_ready: "Script ready - review it",
   changes_requested: "Changes requested",
   script_approved: "Script approved - rendering",
@@ -78,6 +79,19 @@ const OrderCard = ({ order: o, onChanged }) => {
       {o.production_status === "delivered" && o.delivered_note && (
         <p className="mt-3" data-testid={`delivery-note-${o.order_ref}`}>{o.delivered_note}</p>
       )}
+      {o.production_status !== "delivered" && o.video_job === "failed" && (
+        <p className="mt-3" data-testid={`render-failed-${o.order_ref}`}>
+          Rendering hit a problem - the studio has been notified and will sort it for you.
+        </p>
+      )}
+      {o.production_status === "delivered" && o.video_file_id && (
+        <div className="mt-4" data-testid={`order-video-${o.order_ref}`}>
+          <video controls preload="metadata" className="w-full max-w-md border-2 border-ink bg-ink"
+            src={fileUrl(o.video_file_id)} />
+          <a href={fileUrl(o.video_file_id)} download className="lab underline mt-2 inline-block"
+            data-testid={`download-video-${o.order_ref}`}>Download your video</a>
+        </div>
+      )}
     </div>
   );
 };
@@ -129,3 +143,4 @@ export default function Dashboard() {
     </Shell>
   );
 }
+

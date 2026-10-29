@@ -34,7 +34,8 @@ def test_default_build_reports_everything_not_connected(monkeypatch):
     assert d["demo"] is True
     assert d["capabilities"] == {
         "payments": "mock", "ai_video": "none", "ai_script": "template",
-        "email": "not_configured", "google_auth": "not_configured"}
+        "email": "not_configured", "google_auth": "not_configured",
+        "order_automation": "off"}
 
 
 def test_real_payments_do_not_clear_other_demo_flags(monkeypatch):

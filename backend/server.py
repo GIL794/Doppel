@@ -52,16 +52,24 @@ STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 SCRIPT_PROVIDER = os.environ.get("SCRIPT_PROVIDER", "template")  # template | gemini
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")  # the owner picked Gemini 3 Flash in the original build chat (2026-10-29);
+# model code verified against Google's docs on 2026-10-29:
+# https://ai.google.dev/gemini-api/docs/models/gemini-3-flash-preview
 TEASER_PROVIDER = os.environ.get("TEASER_PROVIDER", "none")     # none | fal
 FAL_KEY = os.environ.get("FAL_KEY", "")
-FAL_MODEL = os.environ.get("FAL_MODEL", "veed/fabric-1.0")      # talking-avatar endpoint used by the original build
+FAL_MODEL = os.environ.get("FAL_MODEL", "veed/fabric-1.0/text")  # text-driven talking-avatar endpoint.
+# Verified 2026-10-29 against the official fal.ai docs (schema + pricing):
+# https://fal.ai/models/veed/fabric-1.0/text/llms.txt - billed per second of
+# video ($0.08/s at 480p, $0.15/s at 720p when checked); each render costs money.
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
 EMAIL_PROVIDER = "smtp" if SMTP_HOST else "not_configured"
+# Paid-order automation (script draft + video render + delivery). OFF by default:
+# turning it on lets paid orders trigger Gemini and fal.ai calls that cost money.
+ORDER_AUTOMATION = os.environ.get("ORDER_AUTOMATION", "off").lower() == "on"
 FREE_TEASERS = int(os.environ.get("FREE_TEASERS", "2"))
 ORDER_PRICE_GBP = int(os.environ.get("ORDER_PRICE_GBP", "350"))
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
@@ -134,6 +142,11 @@ def _ensure_column(table, name, ddl):
 _ensure_column("users", "email_verified", "INTEGER NOT NULL DEFAULT 0")
 _ensure_column("files", "owner_user_id", "TEXT")
 _ensure_column("orders", "provider", "TEXT")
+_ensure_column("orders", "video_job", "TEXT NOT NULL DEFAULT 'none'")  # none|submitting|done|failed
+_ensure_column("orders", "video_file_id", "TEXT")
+_ensure_column("orders", "video_error", "TEXT")
+_ensure_column("orders", "video_request_id", "TEXT")     # fal queue request id (persisted right after submit)
+_ensure_column("orders", "video_request_model", "TEXT")  # fal model the request was submitted to
 _ensure_column("orders", "production_status", "TEXT NOT NULL DEFAULT 'awaiting_payment'")
 _ensure_column("orders", "script_text", "TEXT")
 _ensure_column("orders", "change_note", "TEXT")
@@ -303,6 +316,7 @@ def root():
         "payments": (("stripe" if STRIPE_API_KEY else "misconfigured")
                      if PAYMENT_PROVIDER == "stripe" else PAYMENT_PROVIDER),
         "ai_video": "configured" if (TEASER_PROVIDER == "fal" and FAL_KEY) else "none",
+        "order_automation": "on" if (_automation_script_ready() or _automation_video_ready()) else "off",
         "ai_script": "configured" if (SCRIPT_PROVIDER == "gemini" and GEMINI_API_KEY) else "template",
         "email": "configured" if EMAIL_PROVIDER == "smtp" else "not_configured",
         "google_auth": "configured" if (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET) else "not_configured",
@@ -502,6 +516,231 @@ def get_file(file_id: str):
 
 
 # ---------------------------------------------------------------- payments & orders
+# ------------------------------------------------- optional order automation
+# Pipeline design chosen by the builder (not a detailed owner spec): paid order ->
+# Gemini drafts the script -> customer approves it (still required) -> fal.ai renders
+# the avatar video -> file stored -> order marked delivered and emailed.
+# Safety rules: off unless ORDER_AUTOMATION=on and keys exist; automatic
+# drafting/rendering only touches orders with a VERIFIED real (Stripe) payment,
+# never a mock-paid order; each paid step is claimed atomically so it runs at
+# most once; the fal request id is persisted immediately after submit so
+# restarts resume polling the SAME job (polling is free) instead of paying
+# twice; a failed or ambiguous provider call is NEVER retried automatically -
+# the order falls back to the manual admin path with the error recorded, and
+# only an explicit admin action re-runs it. Reconciling an already-submitted
+# job (poll/download only) stays available with just FAL_KEY.
+# video_job states: none -> submitting -> submitted -> done | failed.
+def _claim(sql, args):
+    with _lock:
+        cur = db.execute(sql, args)
+        db.commit()
+        return cur.rowcount == 1
+
+
+def _spawn(fn, *args):
+    threading.Thread(target=fn, args=args, daemon=True).start()
+
+
+def _automation_script_ready():
+    return ORDER_AUTOMATION and SCRIPT_PROVIDER == "gemini" and bool(GEMINI_API_KEY)
+
+
+def _automation_video_ready():
+    return ORDER_AUTOMATION and TEASER_PROVIDER == "fal" and bool(FAL_KEY)
+
+
+def _real_paid(order):
+    """A paid order is only automation-eligible when the payment was VERIFIED
+    real money: the Stripe fulfillment path is the only one that sets
+    payment_status='paid' on a provider='stripe' order. A mock order
+    (provider='mock', marked paid without charging) must never trigger a
+    billable Gemini/fal call, even with automation on and keys set."""
+    return bool(order) and order["payment_status"] == "paid" and order["provider"] == "stripe"
+
+
+def _auto_draft_script(order_ref):
+    if not _automation_script_ready():
+        return
+    order = q("SELECT * FROM orders WHERE order_ref=?", (order_ref,), one=True)
+    prev = order["production_status"] if order else None
+    if prev not in ("in_production", "changes_requested") or not _real_paid(order):
+        return
+    if not _claim("UPDATE orders SET production_status='drafting', production_updated_at=? "
+                  "WHERE order_ref=? AND production_status=?", (now(), order_ref, prev)):
+        return  # someone else is already drafting
+    try:
+        offer = order["brief"] or ""
+        if prev == "changes_requested" and order["change_note"]:
+            offer += f"\nCustomer requested these changes to the previous script: {order['change_note']}"
+        text = providers.gemini_generate_script(
+            GEMINI_API_KEY, model=GEMINI_MODEL, business=order["company"] or order["name"],
+            offer=offer, language=order["language"] or "English", vibe=order["avatar_style"] or "")
+        q("UPDATE orders SET script_text=?, production_status='script_ready', production_updated_at=? "
+          "WHERE order_ref=?", (text.strip(), now(), order_ref), write=True)
+        _maybe_send(providers.send_script_ready_email, to_email=order["email"],
+                    order_ref=order_ref, dashboard_url=f"{FRONTEND_ORIGIN}/dashboard")
+    except Exception:
+        log.exception("automatic script draft failed for order %s; back to manual", order_ref)
+        q("UPDATE orders SET production_status=?, production_updated_at=? WHERE order_ref=?",
+          (prev, now(), order_ref), write=True)
+
+
+def _spoken_text(script):
+    lines = []
+    for part in (script or "").splitlines():
+        part = part.strip()
+        for label in ("HOOK:", "SCRIPT:", "CTA:"):
+            if part.upper().startswith(label):
+                part = part[len(label):].strip()
+        if part:
+            lines.append(part)
+    return " ".join(lines)
+
+
+def _auto_render(order_ref):
+    """Submit the paid render exactly once, persist the provider request id,
+    then finish. Split so a restart never resubmits a billed job."""
+    if not _automation_video_ready():
+        return
+    order = q("SELECT * FROM orders WHERE order_ref=?", (order_ref,), one=True)
+    if not order or order["production_status"] != "script_approved" or not order["photo_file_id"]:
+        return
+    if not _real_paid(order):
+        return  # never spend provider money on a simulated payment
+    if not _claim("UPDATE orders SET video_job='submitting', video_error=NULL "
+                  "WHERE order_ref=? AND video_job='none'", (order_ref,)):
+        return  # already submitted once: never submit (and pay) twice
+    f = q("SELECT * FROM files WHERE file_id=?", (order["photo_file_id"],), one=True)
+    try:
+        image = Path(f["path"]).read_bytes()
+        image_mime = f["mime"]
+    except Exception:
+        log.exception("photo for order %s unreadable; back to manual", order_ref)
+        q("UPDATE orders SET video_job='failed', video_error=? WHERE order_ref=?",
+          ("The uploaded photo could not be read, so no video job was submitted "
+           "(nothing was billed).", order_ref), write=True)
+        return
+    try:
+        job = providers.fal_submit_job(
+            FAL_KEY, model=FAL_MODEL, image_bytes=image,
+            image_mime=image_mime, text=_spoken_text(order["script_text"]))
+    except Exception as e:
+        # Ambiguous: the submit may or may not have reached fal and been billed.
+        log.exception("automatic render submit failed for order %s", order_ref)
+        q("UPDATE orders SET video_job='failed', video_error=? WHERE order_ref=?",
+          (f"Automatic video submit failed ({type(e).__name__}); it may or may not have "
+           "reached the provider or been billed. Check the provider dashboard before any "
+           "manual retry.", order_ref), write=True)
+        return
+    # The request id is durably stored BEFORE any polling, so a restart resumes
+    # this exact job instead of paying for a new one.
+    q("UPDATE orders SET video_job='submitted', video_request_id=?, video_request_model=? "
+      "WHERE order_ref=?", (job["request_id"], FAL_MODEL, order_ref), write=True)
+    _finish_render(order_ref, job)
+
+
+def _finish_render(order_ref, job):
+    """Poll an already-submitted (already billed) job and deliver the video.
+    Polling and downloading are free, so this may safely run again after a
+    restart or an admin reconcile - it never submits a new job."""
+    try:
+        video = providers.fal_wait_for_video(
+            FAL_KEY, status_url=job["status_url"], response_url=job["response_url"])
+    except RuntimeError as e:
+        # The provider itself reported the job failed/cancelled - NOT ambiguous.
+        log.exception("provider reported render failure for order %s", order_ref)
+        q("UPDATE orders SET video_job='failed', video_error=? WHERE order_ref=?",
+          (f"The provider reported the video job failed ({e}). Check the provider "
+           "dashboard; if it was not billed, use the admin render retry.", order_ref), write=True)
+        return
+    except Exception as e:
+        # Lost contact while polling (network, timeout, or a restart killed the
+        # thread). The job exists and its request id is stored - keep it
+        # 'submitted' and resume later; do NOT resubmit (that would bill twice).
+        log.exception("lost contact with render for order %s; stays resumable", order_ref)
+        q("UPDATE orders SET video_error=? WHERE order_ref=?",
+          (f"Lost contact with the submitted video job ({type(e).__name__}). The job is still "
+           "at the provider; polling resumes on restart or via admin reconcile. No new job "
+           "was submitted.", order_ref), write=True)
+        return
+    # Exactly one finisher wins this claim, so duplicate resumes cannot store
+    # the file twice, deliver twice, or email twice.
+    if not _claim("UPDATE orders SET video_job='done', video_error=NULL "
+                  "WHERE order_ref=? AND video_job='submitted' AND production_status='script_approved'",
+                  (order_ref,)):
+        return
+    try:
+        order = q("SELECT * FROM orders WHERE order_ref=?", (order_ref,), one=True)
+        vid = uuid.uuid4().hex
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        (UPLOAD_DIR / f"{vid}.mp4").write_bytes(video)
+        q("""INSERT INTO files (file_id, filename, mime, kind, path, size, owner_user_id, created_at)
+             VALUES (?,?,?,?,?,?,?,?)""",
+          (vid, f"promo-{order_ref}.mp4", "video/mp4", "video", str(UPLOAD_DIR / f"{vid}.mp4"),
+           len(video), order["user_id"], now()), write=True)
+        note = "Your video is ready in your studio."
+        q("""UPDATE orders SET video_file_id=?, production_status='delivered',
+             delivered_note=?, production_updated_at=? WHERE order_ref=?""",
+          (vid, note, now(), order_ref), write=True)
+        _maybe_send(providers.send_delivery_email, to_email=order["email"], order_ref=order_ref, note=note)
+    except Exception:
+        # Local storage failed after the video rendered. Roll back to
+        # 'submitted' so a reconcile re-downloads the finished video (free)
+        # instead of resubmitting a paid job.
+        log.exception("storing finished video failed for order %s", order_ref)
+        q("UPDATE orders SET video_job='submitted', video_error=? WHERE order_ref=?",
+          ("The video rendered at the provider but storing it locally failed. Re-fetching "
+           "the finished file is free; use admin reconcile to finish delivery.", order_ref),
+          write=True)
+
+
+def _recover_interrupted_work():
+    """Restart recovery for the paid pipeline. Safe cases only:
+    - video_job 'submitted' (request id stored): resume polling the SAME job
+      (polling is free, no new charge).
+    - video_job 'submitting' (died before/at the submit, no request id): the
+      submit may or may not have reached the provider - mark failed for MANUAL
+      review. Never auto-resubmit a possibly-billed job.
+    - production_status 'drafting' (died mid-draft): the draft never reached
+      the customer, so reset to in_production and draft again (one extra
+      Gemini call; the customer approval gate still applies)."""
+    # Resuming/flagging existing jobs is free (polling only, or a status
+    # change), so it runs whenever the provider key exists - even if the owner
+    # turned ORDER_AUTOMATION off after the job was submitted. Only NEW paid
+    # submits are gated on the automation flag.
+    if FAL_KEY:
+        for row in q("SELECT order_ref, video_request_id, video_request_model FROM orders "
+                     "WHERE video_job IN ('submitting','submitted')"):
+            if row["video_request_id"]:
+                model = row["video_request_model"] or FAL_MODEL
+                rid = row["video_request_id"]
+                job = {"request_id": rid,
+                       "status_url": f"https://queue.fal.run/{model}/requests/{rid}/status",
+                       "response_url": f"https://queue.fal.run/{model}/requests/{rid}"}
+                log.info("restart: resuming polling of submitted video job for order %s",
+                         row["order_ref"])
+                _spawn(_finish_render, row["order_ref"], job)
+            else:
+                q("UPDATE orders SET video_job='failed', video_error=? WHERE order_ref=?",
+                  ("The server stopped while the video job was being submitted; it may or may "
+                   "not have reached the provider or been billed. Check the provider dashboard; "
+                   "if it was not billed, use the admin render retry.", row["order_ref"]),
+                  write=True)
+                log.warning("restart: order %s died mid-submit; marked failed for manual review",
+                            row["order_ref"])
+    if _automation_script_ready():
+        stuck = q("SELECT order_ref FROM orders WHERE production_status='drafting' "
+                  "AND payment_status='paid' AND provider='stripe'")
+        for row in stuck:
+            if _claim("UPDATE orders SET production_status='in_production', production_updated_at=? "
+                      "WHERE order_ref=? AND production_status='drafting'", (now(), row["order_ref"])):
+                log.info("restart: resuming interrupted script draft for order %s", row["order_ref"])
+                _spawn(_auto_draft_script, row["order_ref"])
+
+
+_spawn(_recover_interrupted_work)
+
+
 @app.post("/api/payments/checkout", status_code=201)
 def checkout(body: CheckoutIn, request: Request):
     if PAYMENT_PROVIDER != "mock" and not STRIPE_API_KEY:
@@ -556,6 +795,8 @@ def checkout(body: CheckoutIn, request: Request):
         q("UPDATE orders SET production_status='in_production', production_updated_at=? WHERE session_id=?",
           (now(), session_id), write=True)
         checkout_url = f"{origin}/payment/success?session_id={session_id}"
+        # No automation spawn here: a mock payment is not real money, and
+        # _auto_draft_script refuses non-verified payments anyway.
     return {"checkout_url": checkout_url, "session_id": session_id}
 
 
@@ -604,6 +845,8 @@ def _mark_order_paid(session_id, amount_total=None, currency=None):
          production_status='in_production', production_updated_at=?
          WHERE session_id=? AND payment_status!='paid'""", (now(), session_id), write=True)
     _maybe_send_order_email(order["email"], order["order_ref"])
+    if _automation_script_ready():
+        _spawn(_auto_draft_script, order["order_ref"])
     return True
 
 
@@ -722,6 +965,8 @@ def approve_script(order_ref: int, user=Depends(current_user)):
         raise HTTPException(409, "There is no script awaiting your approval on this order")
     q("""UPDATE orders SET production_status='script_approved',
          production_updated_at=? WHERE order_ref=?""", (now(), order_ref), write=True)
+    if _automation_video_ready():
+        _spawn(_auto_render, order_ref)
     return {"ok": True, "production_status": "script_approved"}
 
 
@@ -734,6 +979,8 @@ def request_script_changes(order_ref: int, body: ChangeRequestIn, user=Depends(c
     q("""UPDATE orders SET production_status='changes_requested', change_note=?,
          production_updated_at=? WHERE order_ref=?""",
       (body.note.strip(), now(), order_ref), write=True)
+    if _automation_script_ready():
+        _spawn(_auto_draft_script, order_ref)
     return {"ok": True, "production_status": "changes_requested"}
 
 
@@ -748,6 +995,50 @@ def admin_deliver_order(order_ref: int, body: DeliverIn, user=Depends(admin_user
     email_sent = _maybe_send(providers.send_delivery_email, to_email=order["email"],
                              order_ref=order_ref, note=body.note.strip())
     return {"ok": True, "production_status": "delivered", "email_sent": bool(email_sent)}
+
+
+@app.post("/api/admin/orders/{order_ref}/render/retry")
+def admin_retry_render(order_ref: int, user=Depends(admin_user)):
+    """Reviewed manual recovery for a FAILED render. Only run this after
+    checking the provider dashboard and confirming the failed job was not
+    billed: it resets the job state so the normal single-submit automation
+    runs once more (a new, separately billed job)."""
+    order = _order_or_404(order_ref)
+    if not _real_paid(order):
+        raise HTTPException(409, "Automatic rendering only runs for verified real payments")
+    if order["production_status"] != "script_approved":
+        raise HTTPException(409, "Only orders with an approved script can be re-rendered")
+    if order["video_job"] != "failed":
+        raise HTTPException(409, f"Retry only applies to a failed video job (state: {order['video_job']})")
+    if not _automation_video_ready():
+        raise HTTPException(503, "Automatic rendering is not configured")
+    q("""UPDATE orders SET video_job='none', video_error=NULL, video_request_id=NULL,
+         video_request_model=NULL WHERE order_ref=?""", (order_ref,), write=True)
+    log.info("admin %s approved a render retry for order %s", user["email"], order_ref)
+    _spawn(_auto_render, order_ref)
+    return {"ok": True, "video_job": "none"}
+
+
+@app.post("/api/admin/orders/{order_ref}/render/reconcile")
+def admin_reconcile_render(order_ref: int, user=Depends(admin_user)):
+    """Re-check a SUBMITTED render with the provider now. Polling and
+    downloading the finished video are free; this never submits a new job."""
+    order = _order_or_404(order_ref)
+    if order["video_job"] != "submitted" or not order["video_request_id"]:
+        raise HTTPException(409, "This order has no submitted video job to reconcile")
+    # Reconcile only polls/downloads the already-submitted job (free, no new
+    # paid submit), so it stays available when ORDER_AUTOMATION is off - it is
+    # the manual completion path for a job that automation already started.
+    if not FAL_KEY:
+        raise HTTPException(503, "Reconciling needs FAL_KEY to query the provider")
+    model = order["video_request_model"] or FAL_MODEL
+    rid = order["video_request_id"]
+    job = {"request_id": rid,
+           "status_url": f"https://queue.fal.run/{model}/requests/{rid}/status",
+           "response_url": f"https://queue.fal.run/{model}/requests/{rid}"}
+    log.info("admin %s reconciled the submitted render for order %s", user["email"], order_ref)
+    _spawn(_finish_render, order_ref, job)
+    return {"ok": True, "video_job": "submitted"}
 
 
 # ---------------------------------------------------------------- teasers
