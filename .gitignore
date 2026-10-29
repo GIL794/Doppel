@@ -1,0 +1,9 @@
+node_modules/
+build/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+backend/data/
+backend/uploads/
+.DS_Store
