@@ -153,36 +153,84 @@ def gemini_generate_script(api_key, *, model, business, offer, language, vibe, p
 
 
 # ---------------------------------------------------------------- fal.ai
-def fal_generate_talking_avatar(api_key, *, model, image_bytes, image_mime, text, post=_http_post,
-                                get=_http_get, sleep=time.sleep, max_wait=300):
-    """Queue a talking-avatar video on fal.ai (same model family the original
-    build used) and return the finished video bytes. Accepts the photo as a
-    data URI so locally stored uploads work."""
+# Verified 2026-10-29 against the official fal.ai model docs
+# (https://fal.ai/models/veed/fabric-1.0/text/llms.txt): the text-driven
+# talking-avatar endpoint is "veed/fabric-1.0/text" with required inputs
+# image_url + text + resolution ("480p" | "720p") and optional
+# voice_description; the output is {"video": {"url": ...}}. Official pricing
+# on that date: $0.08 per second at 480p, $0.15 per second at 720p.
+def fal_submit_job(api_key, *, model, image_bytes, image_mime, text, post=_http_post,
+                   resolution="480p"):
+    """Submit ONE talking-avatar job to the fal.ai queue and return the queue
+    handle. This is the only billable step: callers must persist the returned
+    request_id immediately and must never resubmit blindly (a resubmit is a
+    new, separately billed job)."""
     data_uri = "data:" + image_mime + ";base64," + base64.b64encode(image_bytes).decode()
     submit = post(
         f"https://queue.fal.run/{model}",
-        json_body={"image_url": data_uri, "text": text, "resolution": "480p"},
+        json_body={"image_url": data_uri, "text": text, "resolution": resolution},
         headers={"Authorization": f"Key {api_key}"},
     )
-    status_url = submit.get("status_url") or f"https://queue.fal.run/{model}/requests/{submit['request_id']}/status"
-    response_url = submit.get("response_url") or f"https://queue.fal.run/{model}/requests/{submit['request_id']}"
+    request_id = submit.get("request_id")
+    if not request_id and not (submit.get("status_url") and submit.get("response_url")):
+        raise RuntimeError("fal submit returned no request handle")
+    return {
+        "request_id": request_id,
+        "status_url": submit.get("status_url")
+            or f"https://queue.fal.run/{model}/requests/{request_id}/status",
+        "response_url": submit.get("response_url")
+            or f"https://queue.fal.run/{model}/requests/{request_id}",
+    }
+
+
+def fal_job_state(api_key, status_url, get=_http_get):
+    """Free queue-status read (polling is never billed)."""
+    return json.loads(get(status_url, headers={"Authorization": f"Key {api_key}"}))
+
+
+class FalResultError(Exception):
+    """The job completed but fetching/reading the result failed. NOT a
+    provider-reported generation failure: re-fetching is free, so callers
+    should retry the fetch, never resubmit the job."""
+
+
+def fal_job_video(api_key, response_url, get=_http_get):
+    """Fetch the finished video bytes for a COMPLETED job (a plain download,
+    not a new generation)."""
+    result = json.loads(get(response_url, headers={"Authorization": f"Key {api_key}"}))
+    video_url = (result.get("video") or {}).get("url") or result.get("video_url")
+    if not video_url:
+        raise FalResultError("fal result had no video url")
+    return get(video_url)
+
+
+def fal_wait_for_video(api_key, *, status_url, response_url, get=_http_get,
+                       sleep=time.sleep, max_wait=300):
+    """Poll a submitted job until it completes and return the video bytes.
+    TimeoutError means the job may still be running at the provider: the
+    caller can resume later with the same URLs and must NOT resubmit."""
     waited = 0
     while waited < max_wait:
-        status = json.loads(get(status_url, headers={"Authorization": f"Key {api_key}"}))
-        state = status.get("status")
+        state = fal_job_state(api_key, status_url, get=get).get("status")
         if state == "COMPLETED":
-            break
+            return fal_job_video(api_key, response_url, get=get)
         if state in ("FAILED", "CANCELLED"):
             raise RuntimeError(f"fal generation {state.lower()}")
         sleep(3)
         waited += 3
-    else:
-        raise TimeoutError("fal generation timed out")
-    result = json.loads(get(response_url, headers={"Authorization": f"Key {api_key}"}))
-    video_url = (result.get("video") or {}).get("url") or result.get("video_url")
-    if not video_url:
-        raise RuntimeError("fal result had no video url")
-    return get(video_url)
+    raise TimeoutError("fal generation timed out")
+
+
+def fal_generate_talking_avatar(api_key, *, model, image_bytes, image_mime, text, post=_http_post,
+                                get=_http_get, sleep=time.sleep, max_wait=300):
+    """Submit + wait + download in one blocking call (teaser path). For paid
+    orders use fal_submit_job + fal_wait_for_video separately so the request
+    id can be persisted between the two."""
+    job = fal_submit_job(api_key, model=model, image_bytes=image_bytes,
+                         image_mime=image_mime, text=text, post=post)
+    return fal_wait_for_video(api_key, status_url=job["status_url"],
+                              response_url=job["response_url"], get=get,
+                              sleep=sleep, max_wait=max_wait)
 
 
 # ---------------------------------------------------------------- email

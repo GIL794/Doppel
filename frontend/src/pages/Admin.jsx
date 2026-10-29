@@ -9,6 +9,7 @@ import { useDemo } from "@/lib/demo";
 const PRODUCTION_LABELS = {
   awaiting_payment: "Awaiting payment",
   in_production: "In production",
+  drafting: "Drafting script",
   script_ready: "Script sent",
   changes_requested: "Changes requested",
   script_approved: "Script approved",
@@ -61,6 +62,31 @@ const ProductionCell = ({ order: o, onChanged }) => {
           <button type="button" onClick={() => setOpen("script")} className="lab underline"
             data-testid={`admin-open-script-${o.order_ref}`}>Send script for approval</button>
         )
+      )}
+      {o.video_job && o.video_job !== "none" && (
+        <p className="text-sm" data-testid={`video-job-${o.order_ref}`}>
+          Video job: {o.video_job}
+          {o.video_job === "submitted" && " (rendering at provider)"}
+        </p>
+      )}
+      {o.video_error && (
+        <p className="text-sm max-w-xs text-graphite" data-testid={`video-error-${o.order_ref}`}>{o.video_error}</p>
+      )}
+      {o.video_job === "submitted" && (
+        <button type="button" disabled={busy}
+          onClick={() => send(`/admin/orders/${o.order_ref}/render/reconcile`, {})}
+          className="lab underline disabled:opacity-40"
+          data-testid={`admin-reconcile-${o.order_ref}`}>Re-check render (free)</button>
+      )}
+      {o.video_job === "failed" && o.production_status === "script_approved" && (
+        <button type="button" disabled={busy}
+          onClick={() => {
+            if (window.confirm("Only retry after checking the fal.ai dashboard that the failed job was NOT billed. A retry submits a new, separately billed render.")) {
+              send(`/admin/orders/${o.order_ref}/render/retry`, {});
+            }
+          }}
+          className="lab underline disabled:opacity-40"
+          data-testid={`admin-retry-render-${o.order_ref}`}>Retry render (bills a new job)</button>
       )}
       {o.production_status === "script_approved" && (
         open === "deliver" ? (
@@ -151,7 +177,7 @@ export default function Admin() {
                   <TableCell>{o.company}</TableCell>
                   <TableCell className="text-sm">{o.language}<br />{o.avatar_style}</TableCell>
                   <TableCell className="text-sm max-w-xs"><p className="line-clamp-3 whitespace-pre-wrap">{o.brief || "—"}</p></TableCell>
-                  <TableCell className="space-x-2"><FileLink id={o.photo_file_id} label="Photo" /><FileLink id={o.logo_file_id} label="Logo" /></TableCell>
+                  <TableCell className="space-x-2"><FileLink id={o.photo_file_id} label="Photo" /><FileLink id={o.logo_file_id} label="Logo" /><FileLink id={o.video_file_id} label="Video" /></TableCell>
                   <TableCell>
                     <span className={`lab px-2 py-1 ${o.payment_status === "paid" ? "bg-signal" : "bg-ground border border-ink"}`}>{o.payment_status}</span>
                   </TableCell>
@@ -166,3 +192,4 @@ export default function Admin() {
     </Shell>
   );
 }
+
