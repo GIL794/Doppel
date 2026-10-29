@@ -10,7 +10,7 @@ const ROOT = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/$/, "");
 
 // Explicit allowlists: anything not listed here stays "unknown".
 const KNOWN = {
-  payments: { mock: "demo", stripe: "real" },
+  payments: { mock: "demo", stripe: "real", closed: "closed" },
   ai_video: { none: "demo", configured: "real" },
   ai_script: { template: "demo", configured: "real" },
   email: { not_configured: "demo", configured: "real" },
@@ -56,3 +56,4 @@ export function useDemo() {
     [flags.payments, flags.ai_video, flags.ai_script, flags.email, flags.google_auth].some((s) => s !== "real");
   return flags;
 }
+

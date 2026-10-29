@@ -197,10 +197,11 @@ def test_restart_resumes_submitted_job_without_resubmit(monkeypatch):
     n = {"fal_submit": 0, "fal_wait": 0}
     fake_fal(monkeypatch, n)
     server = load(monkeypatch, keep_db=True, **AUTO)  # "restart"
-    assert wait_for(lambda: server.q("SELECT video_job FROM orders WHERE order_ref=?",
-                                     (ref,), one=True)["video_job"] == "done")
+    # video_job flips to done before the file is stored, so wait for delivery itself.
+    assert wait_for(lambda: server.q("SELECT production_status FROM orders WHERE order_ref=?",
+                                     (ref,), one=True)["production_status"] == "delivered")
     o = server.q("SELECT * FROM orders WHERE order_ref=?", (ref,), one=True)
-    assert o["production_status"] == "delivered" and o["video_file_id"]
+    assert o["video_job"] == "done" and o["video_file_id"]
     assert n == {"fal_submit": 0, "fal_wait": 1}  # resumed polling, never resubmitted
 
 
@@ -385,3 +386,4 @@ def test_restart_does_not_resume_draft_for_mock_paid_order(monkeypatch):
     assert not wait_for(lambda: server.q("SELECT production_status FROM orders WHERE order_ref=?",
                                          (ref,), one=True)["production_status"] == "script_ready",
                         timeout=1.5)
+

@@ -17,7 +17,9 @@ export const DemoBanner = () => {
   if (!flags.demo) return null;
   const parts = Object.entries(LABELS)
     .filter(([key]) => flags[key] !== "real")
-    .map(([key, [demo, unknown]]) => (flags[key] === "unknown" ? unknown : demo));
+    .map(([key, [demo, unknown]]) =>
+      key === "payments" && flags[key] === "closed" ? "ordering not open yet"
+        : flags[key] === "unknown" ? unknown : demo);
   return (
     <>
       {/* in-flow spacer so the fixed banner never covers page content */}
@@ -26,8 +28,9 @@ export const DemoBanner = () => {
         className="fixed bottom-0 inset-x-0 z-[100] bg-ink text-ground border-t-2 border-signal px-4 py-2 text-center lab"
         data-testid="demo-banner"
       >
-        Local demo: {parts.join(" · ")}
+        {flags.payments === "closed" ? "Early access" : "Local demo"}: {parts.join(" · ")}
       </div>
     </>
   );
 };
+

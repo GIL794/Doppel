@@ -62,3 +62,10 @@ describe("fetchDemo failure", () => {
     expect(f.unknown).toBe(true);
   });
 });
+
+
+describe("closed ordering", () => {
+  it("production backend with no payment provider reports closed, not real or demo", () => {
+    expect(mapCapabilities({ capabilities: { payments: "closed" } }).payments).toBe("closed");
+  });
+});
