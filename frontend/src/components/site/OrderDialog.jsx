@@ -11,6 +11,7 @@ import { LANGUAGES } from "@/components/site/ScriptPreview";
 import { useOrder } from "@/context/OrderContext";
 import { useAuth } from "@/context/AuthContext";
 import { api, formatApiError } from "@/lib/api";
+import { useDemo } from "@/lib/demo";
 
 const fieldCls = "rounded-none border-2 border-ink bg-white h-11 text-base focus-visible:ring-signal";
 const EMPTY = { name: "", email: "", company: "", language: "English", avatar_style: "Looks like me", brief: "", photo_file_id: null, logo_file_id: null };
@@ -18,6 +19,7 @@ const EMPTY = { name: "", email: "", company: "", language: "English", avatar_st
 export const OrderDialog = () => {
   const { open, setOpen, prefill } = useOrder();
   const { user } = useAuth();
+  const demo = useDemo();
   const [form, setForm] = useState(EMPTY);
   const [loading, setLoading] = useState(false);
 
@@ -98,7 +100,11 @@ export const OrderDialog = () => {
             data-testid="order-submit-button">
             {loading ? "Opening secure checkout…" : "Continue to payment · £350 →"}
           </button>
-          <p className="lab text-center text-graphite">Secure checkout by Stripe · Card & Apple Pay</p>
+          {demo ? (
+            <p className="lab text-center text-graphite" data-testid="demo-checkout-note">Demo checkout - no real payment is taken (Stripe is not connected in this build)</p>
+          ) : (
+            <p className="lab text-center text-graphite">Secure checkout by Stripe · Card & Apple Pay</p>
+          )}
         </form>
       </DialogContent>
     </Dialog>

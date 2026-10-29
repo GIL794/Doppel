@@ -3,6 +3,7 @@ import { Shell } from "@/components/site/Shell";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAuth } from "@/context/AuthContext";
 import { api, fileUrl } from "@/lib/api";
+import { useDemo } from "@/lib/demo";
 
 const STATS = [
   ["revenue_gbp", "Revenue", (v) => `£${v.toLocaleString("en-GB")}`],
@@ -18,6 +19,7 @@ const FileLink = ({ id, label }) =>
 
 export default function Admin() {
   const { logout } = useAuth();
+  const demo = useDemo();
   const [overview, setOverview] = useState(null);
   const [orders, setOrders] = useState([]);
 
@@ -31,6 +33,7 @@ export default function Admin() {
       <div className="max-w-6xl mx-auto px-6 py-12 md:py-16">
         <div className="flex flex-wrap justify-between items-end gap-4 mb-10">
           <h1 className="dsp h1-xl">Orders desk</h1>
+          {demo && <span className="lab bg-ground border-2 border-ink px-3 py-2" data-testid="demo-admin-note">DEMO DATA - simulated orders, not real revenue</span>}
           <button type="button" onClick={logout} className="lab underline" data-testid="admin-logout-button">Sign out</button>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-12">

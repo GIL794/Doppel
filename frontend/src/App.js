@@ -10,6 +10,7 @@ import { PaymentSuccess, PaymentCancel } from "@/pages/Payment";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { OrderProvider } from "@/context/OrderContext";
 import { OrderDialog } from "@/components/site/OrderDialog";
+import { DemoBanner } from "@/components/site/DemoBanner";
 import { Loading } from "@/components/site/Shell";
 
 const Protected = ({ children, admin = false }) => {
@@ -45,6 +46,7 @@ export default function App() {
         <OrderProvider>
           <AppRouter />
           <OrderDialog />
+          <DemoBanner />
           <Toaster position="top-center" toastOptions={{ className: "rounded-none border-2 border-ink font-body" }} />
         </OrderProvider>
       </AuthProvider>

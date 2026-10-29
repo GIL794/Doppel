@@ -232,7 +232,10 @@ app.add_middleware(
 
 @app.get("/api")
 def root():
-    return {"app": "Aipromovids API", "status": "ok", "note": "rebuilt backend (see docs/RECOVERY.md)"}
+    demo = PAYMENT_PROVIDER == "mock" or TEASER_PROVIDER == "none"
+    return {"app": "Aipromovids API", "status": "ok", "demo": demo,
+            "payment_provider": PAYMENT_PROVIDER, "teaser_provider": TEASER_PROVIDER,
+            "note": "rebuilt backend (see docs/RECOVERY.md)"}
 
 
 # ---------------------------------------------------------------- auth routes
@@ -371,7 +374,7 @@ def payment_status(session_id: str):
         raise HTTPException(404, "Unknown checkout session")
     return {"session_id": session_id, "payment_status": order["payment_status"],
             "status": "complete" if order["payment_status"] == "paid" else "open",
-            "order_ref": order["order_ref"]}
+            "order_ref": order["order_ref"], "provider": PAYMENT_PROVIDER}
 
 
 @app.get("/api/orders/mine")

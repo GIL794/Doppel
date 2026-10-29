@@ -4,6 +4,7 @@ import { Shell } from "@/components/site/Shell";
 import { useAuth } from "@/context/AuthContext";
 import { useOrder } from "@/context/OrderContext";
 import { api } from "@/lib/api";
+import { useDemo } from "@/lib/demo";
 
 const Card = ({ children, testId }) => (
   <section className="max-w-2xl mx-auto px-6 py-24">
@@ -14,6 +15,7 @@ const Card = ({ children, testId }) => (
 export function PaymentSuccess() {
   const [params] = useSearchParams();
   const { user } = useAuth();
+  const demo = useDemo();
   const [state, setState] = useState({ status: "checking" });
 
   useEffect(() => {
@@ -45,6 +47,7 @@ export function PaymentSuccess() {
             <p className="lab text-signal mb-3">Payment received ✓</p>
             <h1 className="dsp h2-xl" data-testid="payment-success-title">You're in. Your double is on the way.</h1>
             <p className="mt-4">Order <strong className="tab" data-testid="payment-order-ref">#{state.ref}</strong>. We'll email you a script to approve, then your video lands in days.</p>
+            {demo && <p className="lab mt-4 text-graphite" data-testid="demo-payment-note">Demo build: no payment was taken and no emails will be sent.</p>}
             <div className="mt-8 flex flex-wrap gap-4">
               <Link to={user ? "/dashboard" : "/login?next=/dashboard"} className="dsp text-xl bg-signal border-2 border-ink px-6 py-3 shadow-hard-md" data-testid="payment-go-dashboard">
                 {user ? "Go to my studio" : "Create account to track it"}
