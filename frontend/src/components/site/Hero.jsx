@@ -1,6 +1,7 @@
 import { useOrder } from "@/context/OrderContext";
+import { useClosed } from "@/lib/demo";
 
-const PhoneMock = () => (
+const PhoneMock = ({ closed }) => (
   <div className="dp gr min-w-0" data-testid="hero-visual">
     <div className="tilt relative">
       <svg viewBox="0 0 420 420" className="absolute inset-0 w-full h-full" aria-hidden="true">
@@ -24,7 +25,7 @@ const PhoneMock = () => (
           </svg>
         </div>
       </div>
-      <div className="fl1 absolute left-0 top-[18%] bg-ground border-2 border-ink px-3 py-2 lab shadow-hard-sm">EN · ES · FR · DE</div>
+      {!closed && <div className="fl1 absolute left-0 top-[18%] bg-ground border-2 border-ink px-3 py-2 lab shadow-hard-sm">EN · ES · FR · DE</div>}
       <div className="fl2 absolute right-0 bottom-[16%] bg-ink text-ground px-3 py-2 lab">
         <span className="text-signal">▶</span> 0:45 · 9:16
       </div>
@@ -34,6 +35,7 @@ const PhoneMock = () => (
 
 export const Hero = () => {
   const { openOrder } = useOrder();
+  const closed = useClosed();
   return (
     <section className="bg-ground py-24 md:py-32" id="top" data-testid="hero-section">
       <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-[1fr_1.1fr] gap-12 items-center">
@@ -46,7 +48,7 @@ export const Hero = () => {
             <span className="ln"><span>Zero filming.</span></span>
           </h1>
           <p className="mt-6 max-w-md fu f1" data-testid="hero-subtitle">
-            An avatar that looks like you sells your business, in any language.
+            An avatar that looks like you sells your business{closed ? "." : ", in any language."}
           </p>
           <div className="mt-8 fu f2 flex flex-wrap items-center gap-4">
             <button
@@ -55,26 +57,30 @@ export const Hero = () => {
               className="group inline-flex items-center gap-3 bg-signal text-ink dsp text-xl px-6 py-4 border-2 border-ink shadow-hard-md hover:shadow-hard-hover hover:translate-x-1 hover:translate-y-1 transition-[transform,box-shadow]"
               data-testid="hero-buy-button"
             >
-              Get my video · £350 <span className="transition-transform group-hover:translate-x-1">→</span>
+              {closed ? "Ordering opens soon" : "Get my video · £350"} <span className="transition-transform group-hover:translate-x-1">→</span>
             </button>
             <a href="#try" className="lab underline underline-offset-4" data-testid="hero-try-free-link">Try it free first</a>
           </div>
           <ul className="mt-8 fu f3 flex flex-wrap gap-x-6 gap-y-2 lab text-graphite">
-            <li>✓ Fixed price</li><li>✓ Secure checkout</li><li>✓ Ready in days</li>
+            {closed ? <><li>✓ Early access</li><li>✓ Free script preview</li></> : <><li>✓ Fixed price</li><li>✓ Secure checkout</li><li>✓ Ready in days</li></>}
           </ul>
         </div>
-        <PhoneMock />
+        <PhoneMock closed={closed} />
       </div>
     </section>
   );
 };
 
 const WORDS = ["No camera", "No studio", "Ready in days", "Any language"];
+const WORDS_CLOSED = ["No camera", "No studio", "Early access", "Ordering opens soon"];
 
-export const Marquee = () => (
+export const Marquee = () => {
+  const closed = useClosed();
+  const WORDS_NOW = closed ? WORDS_CLOSED : WORDS;
+  return (
   <div className="bg-ink text-ground overflow-hidden py-4 border-y-2 border-ink" aria-hidden="true">
     <div className="mq dsp text-3xl gap-10 pr-10">
-      {[...WORDS, ...WORDS, ...WORDS, ...WORDS].map((w, i) => (
+      {[...WORDS_NOW, ...WORDS_NOW, ...WORDS_NOW, ...WORDS_NOW].map((w, i) => (
         <span key={i} className="flex gap-10">
           <span>{w}</span><span className="text-signal">✦</span>
         </span>
@@ -82,3 +88,4 @@ export const Marquee = () => (
     </div>
   </div>
 );
+};

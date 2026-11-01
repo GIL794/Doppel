@@ -40,6 +40,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
 
+import blobstore
+import dbase
 import providers
 
 # ---------------------------------------------------------------- config
@@ -48,6 +50,13 @@ DB_PATH = os.environ.get("DB_PATH", str(BASE_DIR / "data" / "app.db"))
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", str(BASE_DIR / "uploads")))
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
 PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "mock")  # mock | stripe
+# APP_ENV=production closes the simulated checkout: a public deployment must
+# never mark orders "paid" without a real charge. Default stays "development".
+APP_ENV = os.environ.get("APP_ENV", "development").strip().lower()
+COOKIE_SECURE = APP_ENV == "production"  # HTTPS-only cookies in a real deployment
+# Optional: serve the built React app from this same server (one origin, so
+# cookies need no cross-site settings). Set FRONTEND_DIST to the build folder.
+FRONTEND_DIST = os.environ.get("FRONTEND_DIST", "")
 STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 SCRIPT_PROVIDER = os.environ.get("SCRIPT_PROVIDER", "template")  # template | gemini
@@ -86,13 +95,15 @@ ALLOWED_IMAGE = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("aipromovids")
 
-Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+# DATABASE_URL (postgres://...) switches to PostgreSQL; unset keeps local SQLite.
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+if not DATABASE_URL:
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-_lock = threading.Lock()
-db = sqlite3.connect(DB_PATH, check_same_thread=False)
-db.row_factory = sqlite3.Row
-db.executescript(
+db = dbase.Database(DB_PATH, DATABASE_URL)
+store = blobstore.make_store(UPLOAD_DIR, os.environ)
+db.script(
     """
     CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL,
@@ -130,13 +141,10 @@ db.executescript(
         expires_at REAL NOT NULL, created_at TEXT NOT NULL);
     """
 )
-db.commit()
+
+
 def _ensure_column(table, name, ddl):
-    try:
-        db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
-        db.commit()
-    except Exception:
-        pass  # column already exists (fresh schema above includes it)
+    db.ensure_column(table, name, ddl)  # no-op when the column already exists
 
 
 _ensure_column("users", "email_verified", "INTEGER NOT NULL DEFAULT 0")
@@ -152,8 +160,7 @@ _ensure_column("orders", "script_text", "TEXT")
 _ensure_column("orders", "change_note", "TEXT")
 _ensure_column("orders", "delivered_note", "TEXT")
 _ensure_column("orders", "production_updated_at", "TEXT")
-db.execute("UPDATE orders SET production_status='in_production' WHERE payment_status='paid' AND production_status='awaiting_payment'")
-db.commit()
+db.run("UPDATE orders SET production_status='in_production' WHERE payment_status='paid' AND production_status='awaiting_payment'", commit=True)
 
 
 def now():
@@ -161,11 +168,7 @@ def now():
 
 
 def q(sql, args=(), one=False, write=False):
-    with _lock:
-        cur = db.execute(sql, args)
-        if write:
-            db.commit()
-        rows = cur.fetchall()
+    rows, _ = db.run(sql, args, commit=write)
     if one:
         return rows[0] if rows else None
     return rows
@@ -195,9 +198,9 @@ def new_session(user_id, kind, ttl):
 
 def set_auth_cookies(resp, user_id):
     resp.set_cookie("access_token", new_session(user_id, "access", ACCESS_TTL),
-                    httponly=True, samesite="lax", max_age=ACCESS_TTL)
+                    httponly=True, samesite="lax", secure=COOKIE_SECURE, max_age=ACCESS_TTL)
     resp.set_cookie("refresh_token", new_session(user_id, "refresh", REFRESH_TTL),
-                    httponly=True, samesite="lax", max_age=REFRESH_TTL)
+                    httponly=True, samesite="lax", secure=COOKIE_SECURE, max_age=REFRESH_TTL)
 
 
 def user_public(row):
@@ -314,14 +317,16 @@ def root():
     # capability only stops being called "demo" when it is genuinely connected.
     capabilities = {
         "payments": (("stripe" if STRIPE_API_KEY else "misconfigured")
-                     if PAYMENT_PROVIDER == "stripe" else PAYMENT_PROVIDER),
+                     if PAYMENT_PROVIDER == "stripe"
+                     else "closed" if (APP_ENV == "production" and PAYMENT_PROVIDER == "mock")
+                     else PAYMENT_PROVIDER),
         "ai_video": "configured" if (TEASER_PROVIDER == "fal" and FAL_KEY) else "none",
         "order_automation": "on" if (_automation_script_ready() or _automation_video_ready()) else "off",
         "ai_script": "configured" if (SCRIPT_PROVIDER == "gemini" and GEMINI_API_KEY) else "template",
         "email": "configured" if EMAIL_PROVIDER == "smtp" else "not_configured",
         "google_auth": "configured" if (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET) else "not_configured",
     }
-    demo = any(v in ("mock", "none", "template", "not_configured", "misconfigured")
+    demo = any(v in ("mock", "none", "template", "not_configured", "misconfigured", "closed")
                for v in capabilities.values())
     return {"app": "DoppelAI API", "status": "ok", "demo": demo,
             "capabilities": capabilities,
@@ -375,7 +380,7 @@ def refresh(request: Request, response: Response):
     if not user:
         raise HTTPException(401, "Session expired")
     response.set_cookie("access_token", new_session(user["id"], "access", ACCESS_TTL),
-                        httponly=True, samesite="lax", max_age=ACCESS_TTL)
+                        httponly=True, samesite="lax", secure=COOKIE_SECURE, max_age=ACCESS_TTL)
     return user_public(user)
 
 
@@ -426,7 +431,7 @@ def google_login(next: str = "/dashboard"):
         status_code=302)
     # Bind the state to this browser so a captured callback URL cannot log a
     # victim into the attacker's account.
-    resp.set_cookie("gstate", state, httponly=True, samesite="lax", max_age=600)
+    resp.set_cookie("gstate", state, httponly=True, samesite="lax", secure=COOKIE_SECURE, max_age=600)
     return resp
 
 
@@ -500,19 +505,40 @@ def upload(file: UploadFile = File(...), kind: str = Form("photo"), user=Depends
         raise HTTPException(400, "Image must be under 10 MB")
     fid = uuid.uuid4().hex
     ext = ALLOWED_IMAGE[file.content_type]
-    path = UPLOAD_DIR / f"{fid}{ext}"
-    path.write_bytes(data)
+    try:
+        path = store.put(f"{fid}{ext}", data, file.content_type)
+    except Exception:
+        log.exception("upload storage failed")
+        raise HTTPException(503, "Could not store the file right now. Please try again.")
     q("INSERT INTO files (file_id, filename, mime, kind, path, size, owner_user_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
-      (fid, file.filename, file.content_type, kind, str(path), len(data), user["id"], now()), write=True)
+      (fid, file.filename, file.content_type, kind, path, len(data), user["id"], now()), write=True)
     return {"file_id": fid, "filename": file.filename, "mime": file.content_type, "size": len(data)}
 
 
 @app.get("/api/files/{file_id}")
 def get_file(file_id: str):
     row = q("SELECT * FROM files WHERE file_id=?", (file_id,), one=True)
-    if not row or not Path(row["path"]).exists():
+    if not row:
+        raise HTTPException(404, "File not found")
+    if row["path"].startswith(blobstore.REMOTE_PREFIX):
+        # Remote object: redirect to a short-lived signed URL (Range/seek handled there).
+        if not store.remote:
+            raise HTTPException(404, "File not found")
+        try:
+            return RedirectResponse(store.signed_url(row["path"]), status_code=302)
+        except Exception:
+            log.exception("signing storage url failed")
+            raise HTTPException(404, "File not found")
+    if not Path(row["path"]).exists():
         raise HTTPException(404, "File not found")
     return FileResponse(row["path"], media_type=row["mime"])
+
+
+def _read_file_bytes(row):
+    """Bytes of a stored file, whether it lives on local disk or in remote storage."""
+    if row["path"].startswith(blobstore.REMOTE_PREFIX):
+        return store.get(row["path"])
+    return Path(row["path"]).read_bytes()
 
 
 # ---------------------------------------------------------------- payments & orders
@@ -531,10 +557,8 @@ def get_file(file_id: str):
 # job (poll/download only) stays available with just FAL_KEY.
 # video_job states: none -> submitting -> submitted -> done | failed.
 def _claim(sql, args):
-    with _lock:
-        cur = db.execute(sql, args)
-        db.commit()
-        return cur.rowcount == 1
+    _, n = db.run(sql, args, commit=True)
+    return n == 1
 
 
 def _spawn(fn, *args):
@@ -612,7 +636,7 @@ def _auto_render(order_ref):
         return  # already submitted once: never submit (and pay) twice
     f = q("SELECT * FROM files WHERE file_id=?", (order["photo_file_id"],), one=True)
     try:
-        image = Path(f["path"]).read_bytes()
+        image = _read_file_bytes(f)
         image_mime = f["mime"]
     except Exception:
         log.exception("photo for order %s unreadable; back to manual", order_ref)
@@ -672,11 +696,10 @@ def _finish_render(order_ref, job):
     try:
         order = q("SELECT * FROM orders WHERE order_ref=?", (order_ref,), one=True)
         vid = uuid.uuid4().hex
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        (UPLOAD_DIR / f"{vid}.mp4").write_bytes(video)
+        vpath = store.put(f"{vid}.mp4", video, "video/mp4")
         q("""INSERT INTO files (file_id, filename, mime, kind, path, size, owner_user_id, created_at)
              VALUES (?,?,?,?,?,?,?,?)""",
-          (vid, f"promo-{order_ref}.mp4", "video/mp4", "video", str(UPLOAD_DIR / f"{vid}.mp4"),
+          (vid, f"promo-{order_ref}.mp4", "video/mp4", "video", vpath,
            len(video), order["user_id"], now()), write=True)
         note = "Your video is ready in your studio."
         q("""UPDATE orders SET video_file_id=?, production_status='delivered',
@@ -743,6 +766,8 @@ _spawn(_recover_interrupted_work)
 
 @app.post("/api/payments/checkout", status_code=201)
 def checkout(body: CheckoutIn, request: Request):
+    if APP_ENV == "production" and PAYMENT_PROVIDER == "mock":
+        raise HTTPException(503, "Ordering is not open yet.")
     if PAYMENT_PROVIDER != "mock" and not STRIPE_API_KEY:
         raise HTTPException(503, "Card payments are not configured in this build (set STRIPE_API_KEY).")
     user = user_from_token(request.cookies.get("access_token"), "access")
@@ -1048,16 +1073,15 @@ def _finish_teaser(teaser_id):
         try:
             t = q("SELECT * FROM teasers WHERE teaser_id=?", (teaser_id,), one=True)
             f = q("SELECT * FROM files WHERE file_id=?", (t["photo_file_id"],), one=True)
-            data = Path(f["path"]).read_bytes()
+            data = _read_file_bytes(f)
             video = providers.fal_generate_talking_avatar(
                 FAL_KEY, model=FAL_MODEL, image_bytes=data,
                 image_mime=f["mime"], text=t["text"])
             vid = uuid.uuid4().hex
-            (UPLOAD_DIR / f"{vid}.mp4").write_bytes(video)
+            vpath = store.put(f"{vid}.mp4", video, "video/mp4")
             q("""INSERT INTO files (file_id, filename, mime, kind, path, size, created_at)
                  VALUES (?,?,?,?,?,?,?)""",
-              (vid, "teaser.mp4", "video/mp4", "video",
-               str(UPLOAD_DIR / f"{vid}.mp4"), len(video), now()), write=True)
+              (vid, "teaser.mp4", "video/mp4", "video", vpath, len(video), now()), write=True)
             q("UPDATE teasers SET status='done', video_file_id=? WHERE teaser_id=?",
               (vid, teaser_id), write=True)
             return
@@ -1167,9 +1191,19 @@ def admin_orders(user=Depends(admin_user)):
 
 @app.exception_handler(404)
 async def not_found(request, exc):
+    if FRONTEND_DIST and request.method == "GET" and not request.url.path.startswith("/api"):
+        root = Path(FRONTEND_DIST).resolve()
+        rel = request.url.path.lstrip("/")
+        target = (root / rel).resolve()
+        if rel and root in target.parents and target.is_file():
+            return FileResponse(target)
+        index = root / "index.html"
+        if index.is_file():
+            return FileResponse(index)  # single-page app: client router handles the path
     return JSONResponse({"detail": getattr(exc, "detail", "Not found")}, status_code=404)
 
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
+

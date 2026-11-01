@@ -89,3 +89,18 @@ def test_order_without_provider_reports_null_not_current_config(monkeypatch):
     status = TestClient(server.app).get(f"/api/payments/status/{sid}").json()
     assert status["provider"] is None
     assert status["payment_status"] == "paid"
+
+
+
+def test_production_env_refuses_mock_checkout(monkeypatch):
+    """A public deployment must never mark orders paid without a real charge."""
+    monkeypatch.setenv("APP_ENV", "production")
+    server = load(monkeypatch)
+    c = TestClient(server.app)
+    r = c.post("/api/payments/checkout", json={
+        "name": "A", "email": "a@example.com", "company": "Co", "language": "en",
+        "avatar_style": "professional", "brief": "x" * 40})
+    assert r.status_code == 503
+    assert "not open" in r.json()["detail"].lower()
+    assert c.get("/api").json()["capabilities"]["payments"] == "closed"
+    monkeypatch.delenv("APP_ENV", raising=False)

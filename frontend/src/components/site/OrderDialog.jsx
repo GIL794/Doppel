@@ -46,8 +46,8 @@ export const OrderDialog = () => {
       <DialogContent className="rounded-none border-2 border-ink bg-ground shadow-signal-xl max-w-2xl max-h-[92vh] overflow-y-auto p-0" data-testid="order-dialog">
         <div className="bg-ink text-ground px-6 py-5">
           <DialogHeader>
-            <DialogTitle className="dsp text-3xl text-ground font-normal">Your promo video · £350</DialogTitle>
-            <DialogDescription className="text-ground/80">Tell us the basics. You approve the script before we render.</DialogDescription>
+            <DialogTitle className="dsp text-3xl text-ground font-normal">{payments === "closed" ? "Ordering opens soon" : "Your promo video · £350"}</DialogTitle>
+            <DialogDescription className="text-ground/80">{payments === "closed" ? "Ordering is not open yet. This form is a preview of the planned order: nothing is charged and no order is created. Planned price £350." : "Tell us the basics. You approve the script before we render."}</DialogDescription>
           </DialogHeader>
         </div>
         <form onSubmit={submit} className="px-6 pb-24 pt-2 space-y-4">
@@ -65,7 +65,7 @@ export const OrderDialog = () => {
               <Input id="o-company" required value={form.company} onChange={set("company")} className={`${fieldCls} mt-1`} data-testid="order-company-input" />
             </div>
             <div>
-              <Label className="lab">Video language</Label>
+              <Label className="lab">{payments === "closed" ? "Preferred language (planned)" : "Video language"}</Label>
               <Select value={form.language} onValueChange={set("language")}>
                 <SelectTrigger className={`${fieldCls} mt-1`} data-testid="order-language-select"><SelectValue /></SelectTrigger>
                 <SelectContent className="rounded-none border-2 border-ink">
@@ -95,13 +95,15 @@ export const OrderDialog = () => {
               placeholder="Your offer, who it's for, and where people should go. A rough idea is fine."
               className="rounded-none border-2 border-ink bg-white mt-1 text-base focus-visible:ring-signal" data-testid="order-brief-input" />
           </div>
-          <button type="submit" disabled={loading || payments === "unknown"}
+          <button type="submit" disabled={loading || payments === "unknown" || payments === "closed"}
             className="w-full bg-signal text-ink dsp text-2xl px-6 py-4 border-2 border-ink shadow-hard-md hover:shadow-hard-hover hover:translate-x-1 hover:translate-y-1 transition-[transform,box-shadow] disabled:opacity-70"
             data-testid="order-submit-button">
-            {loading ? "Opening secure checkout…" : "Continue to payment · £350 →"}
+            {payments === "closed" ? "Ordering opens soon" : loading ? "Opening secure checkout…" : "Continue to payment · £350 →"}
           </button>
           {payments === "real" ? (
             <p className="lab text-center text-graphite">Secure checkout by Stripe · Card & Apple Pay</p>
+          ) : payments === "closed" ? (
+            <p className="lab text-center text-graphite" data-testid="closed-checkout-note">Ordering is not open yet - nothing is charged and no order is created</p>
           ) : payments === "demo" ? (
             <p className="lab text-center text-graphite" data-testid="demo-checkout-note">Demo checkout - no real payment is taken (Stripe is not connected in this build)</p>
           ) : (
@@ -112,3 +114,4 @@ export const OrderDialog = () => {
     </Dialog>
   );
 };
+

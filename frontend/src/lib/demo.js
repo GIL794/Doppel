@@ -10,7 +10,7 @@ const ROOT = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/$/, "");
 
 // Explicit allowlists: anything not listed here stays "unknown".
 const KNOWN = {
-  payments: { mock: "demo", stripe: "real" },
+  payments: { mock: "demo", stripe: "real", closed: "closed" },
   ai_video: { none: "demo", configured: "real" },
   ai_script: { template: "demo", configured: "real" },
   email: { not_configured: "demo", configured: "real" },
@@ -55,4 +55,11 @@ export function useDemo() {
     flags.unknown ||
     [flags.payments, flags.ai_video, flags.ai_script, flags.email, flags.google_auth].some((s) => s !== "real");
   return flags;
+}
+
+
+// Closed-ordering mode (production build before payments are connected): the
+// site must not promise checkout, delivery times or language support.
+export function useClosed() {
+  return useDemo().payments === "closed";
 }

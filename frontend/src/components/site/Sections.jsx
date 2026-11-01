@@ -1,3 +1,5 @@
+import { useClosed } from "@/lib/demo";
+
 const STEPS = [
   {
     title: "Send a photo + script idea",
@@ -31,12 +33,14 @@ const STEPS = [
   },
 ];
 
-export const HowItWorks = () => (
+export const HowItWorks = () => {
+  const closed = useClosed();
+  return (
   <section id="how" className="bg-signal text-ink py-24 md:py-32" data-testid="how-section">
     <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-[200px_1fr] gap-12">
       <p className="lab">How it works</p>
       <div className="min-w-0">
-        <h2 className="dsp h2-xl mb-12">Brief Monday. Post Friday.</h2>
+        <h2 className="dsp h2-xl mb-12">{closed ? "How it will work." : "Brief Monday. Post Friday."}</h2>
         <ol className="grid md:grid-cols-3 gap-6">
           {STEPS.map((s, i) => (
             <li key={s.title} className="card-pop bg-ground border-2 border-ink p-4" data-testid={`how-step-${i + 1}`}>
@@ -50,6 +54,7 @@ export const HowItWorks = () => (
     </div>
   </section>
 );
+};
 
 const ROWS = [
   ["Cost", "Crew, studio, edit", "Much cheaper · £350"],
@@ -58,21 +63,28 @@ const ROWS = [
   ["Languages", "One", "Looks like you, speaks many languages"],
 ];
 
-export const WhyTable = () => (
+const ROWS_CLOSED = ROWS.map(([k, a, b]) =>
+  k === "Turnaround" ? [k, a, "To be published when ordering opens"]
+  : k === "Languages" ? [k, a, "Looks like you; other languages planned"]
+  : [k, a, b]);
+
+export const WhyTable = () => {
+  const rows = useClosed() ? ROWS_CLOSED : ROWS;
+  return (
   <section id="why" className="bg-ground py-24 md:py-32" data-testid="why-section">
     <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-[200px_1fr] gap-12">
       <p className="lab">Why DoppelAI</p>
       <div className="min-w-0">
         <h2 className="dsp h2-xl mb-12">Skip the shoot, not the quality</h2>
         <div className="border-2 border-ink overflow-x-auto">
-          <table className="w-full text-left min-w-[480px]">
+          <table className="w-full text-left text-sm md:text-base">
             <thead className="bg-ink text-ground">
-              <tr><th className="p-4 lab" /><th className="p-4 lab">Film crew</th><th className="p-4 lab text-signal">DoppelAI</th></tr>
+              <tr><th className="p-2 md:p-4 lab" /><th className="p-2 md:p-4 lab">Film crew</th><th className="p-2 md:p-4 lab text-signal">DoppelAI</th></tr>
             </thead>
             <tbody className="divide-y-2 divide-ink">
-              {ROWS.map(([k, a, b]) => (
+              {rows.map(([k, a, b]) => (
                 <tr key={k} className="hover:bg-blush/50 transition-colors">
-                  <td className="p-4 dsp text-xl">{k}</td><td className="p-4">{a}</td><td className="p-4 font-semibold tab">{b}</td>
+                  <td className="p-2 md:p-4 dsp text-base md:text-xl">{k}</td><td className="p-2 md:p-4">{a}</td><td className="p-2 md:p-4 font-semibold tab">{b}</td>
                 </tr>
               ))}
             </tbody>
@@ -82,6 +94,7 @@ export const WhyTable = () => (
     </div>
   </section>
 );
+};
 
 const WHO = ["Local businesses", "Startups & online brands", "Agencies who resell", "Coaches & personal brands"];
 

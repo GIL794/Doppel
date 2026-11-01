@@ -1,0 +1,23 @@
+# Render Blueprint (free web service). Secrets are NOT in this file: set them
+# in the Render dashboard (sync: false). Free instances sleep after 15 minutes
+# idle and have an ephemeral disk, so ALL state must live in DATABASE_URL
+# (Postgres) and Supabase Storage - see docs/DEPLOY.md.
+services:
+  - type: web
+    name: doppelai
+    runtime: docker
+    plan: free
+    healthCheckPath: /api
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false
