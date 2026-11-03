@@ -95,3 +95,10 @@ class Database:
                 self.conn.commit()
             except Exception:
                 pass  # column already exists
+
+    def close(self):
+        with self.lock:
+            try:
+                self.conn.close()
+            except Exception:
+                pass

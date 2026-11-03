@@ -15,8 +15,8 @@ def load(monkeypatch, **env):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
-    monkeypatch.setenv("DB_PATH", "/tmp/aipromovids-flags-test.db")
-    monkeypatch.setenv("UPLOAD_DIR", "/tmp/aipromovids-flags-uploads")
+    monkeypatch.setenv("DB_PATH", "C:/Users/Gabriele/AppData/Local/Temp/aipromovids-flags-test.db")
+    monkeypatch.setenv("UPLOAD_DIR", "C:/Users/Gabriele/AppData/Local/Temp/aipromovids-flags-uploads")
     if "server" in sys.modules:
         import server
         return importlib.reload(server)
@@ -53,7 +53,7 @@ def test_status_endpoint_reports_order_provider(monkeypatch):
     server = load(monkeypatch)
     client = TestClient(server.app)
     r = client.post("/api/payments/checkout", json={
-        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000"})
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000", "consent_terms": True, "consent_likeness": True})
     sid = r.json()["session_id"]
     status = client.get(f"/api/payments/status/{sid}").json()
     assert status["provider"] == "mock"
@@ -66,7 +66,7 @@ def test_provider_persisted_per_order_survives_config_change(monkeypatch):
     server = load(monkeypatch)
     client = TestClient(server.app)
     r = client.post("/api/payments/checkout", json={
-        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000"})
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000", "consent_terms": True, "consent_likeness": True})
     sid = r.json()["session_id"]
     assert client.get(f"/api/payments/status/{sid}").json()["provider"] == "mock"
 
@@ -99,7 +99,7 @@ def test_production_env_refuses_mock_checkout(monkeypatch):
     c = TestClient(server.app)
     r = c.post("/api/payments/checkout", json={
         "name": "A", "email": "a@example.com", "company": "Co", "language": "en",
-        "avatar_style": "professional", "brief": "x" * 40})
+        "avatar_style": "professional", "brief": "x" * 40, "consent_terms": True, "consent_likeness": True})
     assert r.status_code == 503
     assert "not open" in r.json()["detail"].lower()
     assert c.get("/api").json()["capabilities"]["payments"] == "closed"

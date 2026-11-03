@@ -20,11 +20,24 @@ def load(monkeypatch, **env):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
-    db_path = "/tmp/aipromovids-fullscope-test.db"
+    db_path = "C:/Users/Gabriele/AppData/Local/Temp/aipromovids-fullscope-test.db"
+    if "server" in sys.modules:
+        import server
+        if hasattr(server, "db"):
+            server.db.close()
     if os.path.exists(db_path):
-        os.unlink(db_path)
+        try:
+            os.unlink(db_path)
+        except PermissionError:
+            if "server" in sys.modules:
+                import server
+                for tbl in ("orders", "users", "sessions", "files", "teasers", "password_resets", "script_previews", "oauth_states"):
+                    try:
+                        server.q(f"DELETE FROM {tbl}", write=True)
+                    except Exception:
+                        pass
     monkeypatch.setenv("DB_PATH", db_path)
-    monkeypatch.setenv("UPLOAD_DIR", "/tmp/aipromovids-fullscope-uploads")
+    monkeypatch.setenv("UPLOAD_DIR", "C:/Users/Gabriele/AppData/Local/Temp/aipromovids-fullscope-uploads")
     if "server" in sys.modules:
         import server
         return importlib.reload(server)
@@ -142,7 +155,7 @@ def _stripe_client(monkeypatch):
     monkeypatch.setattr(providers, "stripe_create_checkout",
                         lambda *a, **k: {"session_id": "cs_test_real", "checkout_url": "https://checkout.stripe.com/pay/cs_test_real"})
     client = TestClient(server.app)
-    client.post("/api/payments/checkout", json={"name": "A", "email": "a@b.co", "company": "C"})
+    client.post("/api/payments/checkout", json={"name": "A", "email": "a@b.co", "company": "C", "consent_terms": True, "consent_likeness": True})
     return server, client
 
 
@@ -177,7 +190,7 @@ def workflow(monkeypatch):
                         lambda cfg, *, to_email, order_ref, note, **k: emails.append(("delivered", to_email, order_ref)) or True)
     customer = TestClient(server.app)
     customer.post("/api/auth/register", json={"name": "C", "email": "c@example.com", "password": "password123"})
-    customer.post("/api/payments/checkout", json={"name": "C", "email": "c@example.com", "company": "Co"})
+    customer.post("/api/payments/checkout", json={"name": "C", "email": "c@example.com", "company": "Co", "consent_terms": True, "consent_likeness": True})
     admin = TestClient(server.app)
     admin.post("/api/auth/register", json={"name": "B", "email": "boss@example.com", "password": "password123"})
     # Out-of-band promotion: password registration must never grant admin.
@@ -299,7 +312,7 @@ def test_google_callback_requires_browser_bound_state(monkeypatch):
 def test_guest_order_hidden_until_email_verified(monkeypatch):
     server = load(monkeypatch)
     guest = TestClient(server.app)
-    guest.post("/api/payments/checkout", json={"name": "G", "email": "v@example.com", "company": "Co"})
+    guest.post("/api/payments/checkout", json={"name": "G", "email": "v@example.com", "company": "Co", "consent_terms": True, "consent_likeness": True})
     # password account with the same email string: NO access to the guest order
     pw = TestClient(server.app)
     pw.post("/api/auth/register", json={"name": "V", "email": "v@example.com", "password": "password123"})
@@ -347,7 +360,7 @@ def test_checkout_redirects_use_server_origin_only(monkeypatch):
     server = load(monkeypatch)
     client = TestClient(server.app)
     r = client.post("/api/payments/checkout", json={
-        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "https://evil.example"})
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "https://evil.example", "consent_terms": True, "consent_likeness": True})
     assert r.json()["checkout_url"].startswith("http://localhost:3000/")
     server2 = load(monkeypatch, PAYMENT_PROVIDER="stripe", STRIPE_API_KEY="sk_test_x")
     captured = {}
@@ -355,7 +368,7 @@ def test_checkout_redirects_use_server_origin_only(monkeypatch):
                         lambda *a, **k: captured.update(k) or {"session_id": "cs_1", "checkout_url": "u"})
     client2 = TestClient(server2.app)
     client2.post("/api/payments/checkout", json={
-        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "https://evil.example"})
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "https://evil.example", "consent_terms": True, "consent_likeness": True})
     assert captured["origin_url"] == "http://localhost:3000"
 
 

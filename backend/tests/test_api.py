@@ -1,18 +1,30 @@
+import importlib
 import io
 import os
+from pathlib import Path
 import re
+import sys
+import tempfile
 import time
 
-os.environ["DB_PATH"] = "/tmp/aipromovids-test.db"
-os.environ["UPLOAD_DIR"] = "/tmp/aipromovids-test-uploads"
+_TEMP = Path(tempfile.gettempdir()).as_posix()
+db_file = f"{_TEMP}/aipromovids-test.db"
+os.environ["DB_PATH"] = db_file
+os.environ["UPLOAD_DIR"] = f"{_TEMP}/aipromovids-test-uploads"
 os.environ["ADMIN_EMAILS"] = "admin@example.com"
+os.environ["ORDER_PRICE_GBP"] = "350"
+os.environ["PAYMENT_PROVIDER"] = "mock"
 
-for p in ("/tmp/aipromovids-test.db",):
-    if os.path.exists(p):
-        os.remove(p)
+if os.path.exists(db_file):
+    try:
+        os.remove(db_file)
+    except Exception:
+        pass
+
+import server  # noqa: E402
+server = importlib.reload(server)
 
 from fastapi.testclient import TestClient  # noqa: E402
-import server  # noqa: E402
 
 client = TestClient(server.app)
 PNG = bytes.fromhex(
@@ -31,7 +43,8 @@ def test_register_login_me_refresh_logout():
     assert client.get("/api/auth/me").json()["email"] == "ada@example.com"
 
     # refresh works even with an invalid access cookie
-    client.cookies.set("access_token", "bogus")
+    client.cookies.delete("access_token")
+    client.cookies.set("access_token", "bogus", domain="testserver.local")
     r = client.post("/api/auth/refresh")
     assert r.status_code == 200, r.text
     assert r.json()["name"] == "Ada"
@@ -62,7 +75,7 @@ def test_mock_checkout_status_and_my_orders():
     r = client.post("/api/payments/checkout", json={
         "name": "Ada", "email": "ada@example.com", "company": "Bloom Florist",
         "language": "English", "avatar_style": "Looks like me", "brief": "Say hi",
-        "origin_url": "http://localhost:3000"})
+        "origin_url": "http://localhost:3000", "consent_terms": True, "consent_likeness": True})
     assert r.status_code == 201, r.text
     url = r.json()["checkout_url"]
     sid = re.search(r"session_id=([0-9a-f]+)", url).group(1)
@@ -145,3 +158,31 @@ def test_password_reset_flow():
 def test_google_session_honest_501():
     r = client.post("/api/auth/google/session", json={"session_id": "x"})
     assert r.status_code == 501 and "/api/auth/google/login" in r.json()["detail"]
+
+
+def test_checkout_requires_consent_and_records_audit():
+    # 1. Missing consent -> 422
+    r = client.post("/api/payments/checkout", json={
+        "name": "Jane", "email": "jane@example.com", "company": "Acme",
+        "consent_terms": False, "consent_likeness": True
+    })
+    assert r.status_code == 422, r.text
+    assert "Terms of service and likeness consent are required" in r.text
+
+    r2 = client.post("/api/payments/checkout", json={
+        "name": "Jane", "email": "jane@example.com", "company": "Acme",
+        "consent_terms": True, "consent_likeness": False
+    })
+    assert r2.status_code == 422, r2.text
+
+    # 2. Both consents provided -> 201 & audit recorded in DB
+    r3 = client.post("/api/payments/checkout", json={
+        "name": "Jane", "email": "jane@example.com", "company": "Acme",
+        "consent_terms": True, "consent_likeness": True
+    })
+    assert r3.status_code == 201, r3.text
+    sid = r3.json()["session_id"]
+    order = server.q("SELECT consent_terms, consent_likeness, consent_timestamp FROM orders WHERE session_id=?", (sid,), one=True)
+    assert order["consent_terms"] == 1
+    assert order["consent_likeness"] == 1
+    assert order["consent_timestamp"] is not None

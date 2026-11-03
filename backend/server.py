@@ -125,7 +125,10 @@ db.script(
         status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL,
         production_status TEXT NOT NULL DEFAULT 'awaiting_payment',
         script_text TEXT, change_note TEXT, delivered_note TEXT,
-        production_updated_at TEXT);
+        production_updated_at TEXT,
+        consent_terms INTEGER NOT NULL DEFAULT 0,
+        consent_likeness INTEGER NOT NULL DEFAULT 0,
+        consent_timestamp TEXT);
     CREATE TABLE IF NOT EXISTS teasers (
         teaser_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, photo_file_id TEXT,
         text TEXT, voice_description TEXT, status TEXT NOT NULL DEFAULT 'processing',
@@ -160,6 +163,9 @@ _ensure_column("orders", "script_text", "TEXT")
 _ensure_column("orders", "change_note", "TEXT")
 _ensure_column("orders", "delivered_note", "TEXT")
 _ensure_column("orders", "production_updated_at", "TEXT")
+_ensure_column("orders", "consent_terms", "INTEGER NOT NULL DEFAULT 0")
+_ensure_column("orders", "consent_likeness", "INTEGER NOT NULL DEFAULT 0")
+_ensure_column("orders", "consent_timestamp", "TEXT")
 db.run("UPDATE orders SET production_status='in_production' WHERE payment_status='paid' AND production_status='awaiting_payment'", commit=True)
 
 
@@ -273,6 +279,8 @@ class CheckoutIn(BaseModel):
     photo_file_id: str | None = None
     logo_file_id: str | None = None
     origin_url: str | None = None
+    consent_terms: bool = False
+    consent_likeness: bool = False
 
 
 class TeaserIn(BaseModel):
@@ -766,6 +774,8 @@ _spawn(_recover_interrupted_work)
 
 @app.post("/api/payments/checkout", status_code=201)
 def checkout(body: CheckoutIn, request: Request):
+    if not body.consent_terms or not body.consent_likeness:
+        raise HTTPException(422, "Terms of service and likeness consent are required.")
     if APP_ENV == "production" and PAYMENT_PROVIDER == "mock":
         raise HTTPException(503, "Ordering is not open yet.")
     if PAYMENT_PROVIDER != "mock" and not STRIPE_API_KEY:
@@ -780,13 +790,15 @@ def checkout(body: CheckoutIn, request: Request):
     # and the "checkout" redirects straight to the success page, mirroring the
     # original Stripe round-trip. A real Stripe adapter is included and
     # activates with PAYMENT_PROVIDER=stripe + owner-supplied keys.
+    consent_time = now()
     q("""INSERT INTO orders (session_id, user_id, name, email, company, language, avatar_style,
-         brief, photo_file_id, logo_file_id, amount_gbp, provider, payment_status, status, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         brief, photo_file_id, logo_file_id, amount_gbp, provider, payment_status, status, created_at,
+         consent_terms, consent_likeness, consent_timestamp)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
       (session_id, user["id"] if user else None, body.name, body.email.lower(), body.company,
        body.language, body.avatar_style, body.brief, body.photo_file_id, body.logo_file_id,
        ORDER_PRICE_GBP, PAYMENT_PROVIDER, "paid" if PAYMENT_PROVIDER == "mock" else "pending",
-       "open", now()), write=True)
+       "open", now(), 1 if body.consent_terms else 0, 1 if body.consent_likeness else 0, consent_time), write=True)
     order_ref = str(q("SELECT order_ref FROM orders WHERE session_id=?", (session_id,), one=True)["order_ref"])
     if PAYMENT_PROVIDER == "stripe":
         # REAL charge path - only when explicitly configured with a key the

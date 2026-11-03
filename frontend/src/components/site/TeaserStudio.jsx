@@ -77,6 +77,9 @@ export const TeaserStudio = () => {
           <Input id="t-voice" maxLength={120} value={voice} onChange={(e) => setVoice(e.target.value)} placeholder="e.g. Warm, British accent"
             className={`${fieldCls} mt-1`} data-testid="teaser-voice-input" />
         </div>
+        <p className="lab text-xs text-graphite border-t border-ink/20 pt-3">
+          ✦ Synthetic Media Notice: Generating a teaser produces synthetic AI video. By submitting, you confirm you hold all likeness rights for the uploaded portrait.
+        </p>
         <PrimaryBtn type="submit" disabled={busy || data.remaining < 1} data-testid="teaser-generate-button">
           {busy ? "Sending…" : data.remaining < 1 ? "Free teasers used" : "Make my talking teaser →"}
         </PrimaryBtn>

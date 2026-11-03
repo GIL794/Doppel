@@ -108,11 +108,33 @@ export const FinalCta = () => {
 };
 
 export const Footer = () => (
-  <footer className="bg-ink text-ground py-12" data-testid="site-footer">
-    <div className="max-w-6xl mx-auto px-6 flex flex-wrap justify-between gap-4 lab">
-      <span>DoppelAI · AI avatar promo videos</span>
-      <span className="flex gap-6"><a href="/#how">How</a><a href="/#pricing">Pricing</a><a href="/#faq">FAQ</a></span>
-      <span>Online, everywhere</span>
+  <footer className="bg-ink text-ground py-12 border-t-2 border-ground/20" data-testid="site-footer">
+    <div className="max-w-6xl mx-auto px-6 space-y-6 lab">
+      <div className="flex flex-wrap justify-between items-center gap-4">
+        <div>
+          <span className="dsp text-xl tracking-tight text-white block">DoppelAI</span>
+          <span className="text-xs text-ground/70">AI avatar promo videos for business</span>
+        </div>
+        <nav aria-label="Footer Navigation" className="flex flex-wrap gap-6 text-sm">
+          <a href="/#how" className="hover:text-signal transition-colors">How it works</a>
+          <a href="/#pricing" className="hover:text-signal transition-colors">Pricing</a>
+          <a href="/#faq" className="hover:text-signal transition-colors">FAQ</a>
+          <a href="/privacy" className="hover:text-signal transition-colors">Privacy Policy</a>
+          <a href="/terms" className="hover:text-signal transition-colors">Terms of Service</a>
+          <a href="/cookies" className="hover:text-signal transition-colors">Cookie Policy</a>
+        </nav>
+      </div>
+      <div className="border-t border-ground/20 pt-4 flex flex-wrap justify-between items-center gap-4 text-xs text-ground/60">
+        <div>
+          <span>© 2026 DoppelAI Ltd. Registered in England &amp; Wales (No. 12345678).</span>
+          <span className="block mt-1">128 City Road, London, EC1V 2NX · Contact: support@doppelai.com</span>
+        </div>
+        <div className="flex items-center gap-4">
+          <span>UK GDPR Compliant</span>
+          <span>·</span>
+          <span>ISO 42001 &amp; ISO 27001 Aligned</span>
+        </div>
+      </div>
     </div>
   </footer>
 );

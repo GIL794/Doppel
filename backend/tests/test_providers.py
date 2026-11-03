@@ -21,11 +21,24 @@ def load(monkeypatch, **env):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
-    db_path = "/tmp/aipromovids-providers-test.db"
+    db_path = "C:/Users/Gabriele/AppData/Local/Temp/aipromovids-providers-test.db"
+    if "server" in sys.modules:
+        import server
+        if hasattr(server, "db"):
+            server.db.close()
     if os.path.exists(db_path):
-        os.unlink(db_path)  # deterministic rows per run (fixed stub session ids)
+        try:
+            os.unlink(db_path)
+        except PermissionError:
+            if "server" in sys.modules:
+                import server
+                for tbl in ("orders", "users", "sessions", "files", "teasers", "password_resets", "script_previews", "oauth_states"):
+                    try:
+                        server.q(f"DELETE FROM {tbl}", write=True)
+                    except Exception:
+                        pass
     monkeypatch.setenv("DB_PATH", db_path)
-    monkeypatch.setenv("UPLOAD_DIR", "/tmp/aipromovids-providers-uploads")
+    monkeypatch.setenv("UPLOAD_DIR", "C:/Users/Gabriele/AppData/Local/Temp/aipromovids-providers-uploads")
     if "server" in sys.modules:
         import server
         return importlib.reload(server)
@@ -77,7 +90,7 @@ def test_stripe_configured_flow_and_webhook(monkeypatch):
         "session_id": "cs_test_real", "checkout_url": "https://checkout.stripe.com/c/pay/cs_test_real"})
     client = TestClient(server.app)
     r = client.post("/api/payments/checkout", json={
-        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000"})
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000", "consent_terms": True, "consent_likeness": True})
     assert r.status_code == 201
     body = r.json()
     assert body["session_id"] == "cs_test_real"
@@ -106,7 +119,7 @@ def test_stripe_session_failure_marks_order_failed(monkeypatch):
     monkeypatch.setattr(providers, "stripe_create_checkout", boom)
     client = TestClient(server.app)
     r = client.post("/api/payments/checkout", json={
-        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000"})
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000", "consent_terms": True, "consent_likeness": True})
     assert r.status_code == 502
     detail = r.json()["detail"]
     assert "could not be verified" in detail  # ambiguity preserved
@@ -222,7 +235,7 @@ def _stripe_client(monkeypatch, **env):
         "session_id": "cs_test_real", "checkout_url": "https://checkout.stripe.com/c/pay/cs_test_real"})
     client = TestClient(server.app)
     client.post("/api/payments/checkout", json={
-        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000"})
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000", "consent_terms": True, "consent_likeness": True})
     return server, client
 
 
@@ -293,7 +306,7 @@ def test_mock_checkout_never_sends_real_email_even_with_smtp(monkeypatch):
     monkeypatch.setattr(providers, "send_order_email", lambda *a, **k: calls.append(1) or True)
     client = TestClient(server.app)
     r = client.post("/api/payments/checkout", json={
-        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000"})
+        "name": "A", "email": "a@b.co", "company": "C", "origin_url": "http://localhost:3000", "consent_terms": True, "consent_likeness": True})
     assert r.status_code == 201
     assert r.json()["checkout_url"].startswith("http://localhost:3000/payment/success")
     assert calls == []  # simulated payment -> no real email, ever

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 import providers
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
-DB = "/tmp/aipromovids-automation-test.db"
+DB = "C:/Users/Gabriele/AppData/Local/Temp/aipromovids-automation-test.db"
 
 
 def load(monkeypatch, keep_db=False, **env):
@@ -21,15 +21,21 @@ def load(monkeypatch, keep_db=False, **env):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
-    if not keep_db and os.path.exists(DB):
-        os.unlink(DB)
     monkeypatch.setenv("DB_PATH", DB)
-    monkeypatch.setenv("UPLOAD_DIR", "/tmp/aipromovids-automation-uploads")
+    monkeypatch.setenv("UPLOAD_DIR", "C:/Users/Gabriele/AppData/Local/Temp/aipromovids-automation-uploads")
     if "server" in sys.modules:
         import server
-        return importlib.reload(server)
-    import server
-    return server
+        s = importlib.reload(server)
+    else:
+        import server
+        s = server
+    if not keep_db:
+        for tbl in ("orders", "users", "sessions", "files", "teasers", "password_resets", "script_previews", "oauth_states"):
+            try:
+                s.q(f"DELETE FROM {tbl}", write=True)
+            except Exception:
+                pass
+    return s
 
 
 def order_as_customer(server, monkeypatch, real_paid=True):
@@ -41,7 +47,7 @@ def order_as_customer(server, monkeypatch, real_paid=True):
     assert up.status_code == 201, up.text
     c.post("/api/payments/checkout", json={"name": "C", "email": "c@example.com", "company": "Bloom",
                                            "brief": "same-day bouquets", "language": "French",
-                                           "photo_file_id": up.json()["file_id"]})
+                                           "photo_file_id": up.json()["file_id"], "consent_terms": True, "consent_likeness": True})
     if real_paid:
         # Simulate what the verified Stripe fulfillment path produces and
         # triggers; the mock checkout alone must never qualify for billable
